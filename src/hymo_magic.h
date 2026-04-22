@@ -131,6 +131,7 @@ struct hymo_spoof_cmdline {
 #define HYMO_FEATURE_MOUNT_HIDE    (1 << 6)  /* hide overlay from /proc/mounts and /proc/pid/mountinfo */
 #define HYMO_FEATURE_MAPS_SPOOF    (1 << 7)  /* spoof ino/dev/pathname in /proc/pid/maps (read buffer filter) */
 #define HYMO_FEATURE_STATFS_SPOOF  (1 << 8)  /* spoof statfs f_type so direct matches resolved (INCONSISTENT_MOUNT) */
+#define HYMO_FEATURE_FAKE_MOUNTINFO (1 << 9) /* serve per-marked-app fake mountinfo (no KSU mounts, renumbered ids) */
 
 /*
  * Maps spoof rule: when a /proc/pid/maps line has (target_ino[, target_dev]),

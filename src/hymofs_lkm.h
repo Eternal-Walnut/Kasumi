@@ -247,6 +247,9 @@ extern int hymo_syscall_nr_param;
 int hymofs_get_anon_fd(void);
 
 void hymofs_handle_sys_enter_path(struct pt_regs *regs, long id);
+void hymofs_handle_sys_exit_path(struct pt_regs *regs, long ret);
+void hymofs_handle_sys_enter_statx(struct pt_regs *regs, long id);
+void hymofs_handle_sys_exit_statx(struct pt_regs *regs, long ret);
 void hymofs_handle_sys_enter_getfd(struct pt_regs *regs, long id);
 void hymofs_handle_sys_exit_getfd(struct pt_regs *regs, long ret);
 

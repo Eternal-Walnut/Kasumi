@@ -36,6 +36,9 @@ static inline bool hymo_syscall_id_relevant(long id)
 #ifdef __NR_openat2
 	       id == __NR_openat2 ||
 #endif
+#ifdef __NR_statx
+	       id == __NR_statx ||
+#endif
 	       id == __NR_reboot || id == __NR_prctl || id == __NR_read ||
 	       id == (long)hymo_syscall_nr_param;
 }
@@ -59,6 +62,7 @@ static void hymo_sys_enter_handler(void *data, struct pt_regs *regs, long id)
 		return;
 	hymofs_handle_sys_enter_getfd(regs, id);
 	hymofs_handle_sys_enter_path(regs, id);
+	hymofs_handle_sys_enter_statx(regs, id);
 	hymofs_handle_sys_enter_cmdline(regs, id);
 }
 
@@ -70,6 +74,8 @@ static void hymo_sys_exit_handler(void *data, struct pt_regs *regs, long ret)
 		return;
 	if (!current || current->pid == 0)
 		return;
+	hymofs_handle_sys_exit_path(regs, ret);
+	hymofs_handle_sys_exit_statx(regs, ret);
 	hymofs_handle_sys_exit_getfd(regs, ret);
 	hymofs_handle_sys_exit_cmdline(regs, ret);
 }

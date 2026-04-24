@@ -52,6 +52,8 @@
 #include "hymofs_overlay.h"
 #include "hymofs_tracepoint_hooks.h"
 #include "hymofs_uname.h"
+#include "hymofs_dop_override.h"
+#include "hymofs_xattr_sid_override.h"
 #include "hymofs_iop_override.h"
 #include "hymofs_fop_override.h"
 #include "hymofs_fake_mountinfo.h"
@@ -722,9 +724,10 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 			     atomic64_read(&hymo_hook_stats.sop_destroy_inode));
 		written += n;
 		n = scnprintf(kbuf + written, buf_size - written,
-			     "stats: d_path entries=%lld rewrites=%lld\n",
+			     "stats: d_path entries=%lld rewrites=%lld dop_dname=%lld\n",
 			     atomic64_read(&hymo_hook_stats.d_path_entries),
-			     atomic64_read(&hymo_hook_stats.d_path_rewrites));
+			     atomic64_read(&hymo_hook_stats.d_path_rewrites),
+			     atomic64_read(&hymo_hook_stats.dop_dname_entries));
 		written += n;
 		n = scnprintf(kbuf + written, buf_size - written,
 			     "stats: iterate entries=%lld wrapped=%lld fop_entries=%lld fop_wrapped=%lld filldir_hidden=%lld filldir_injected=%lld\n",
@@ -736,9 +739,10 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 			     atomic64_read(&hymo_hook_stats.filldir_injected));
 		written += n;
 		n = scnprintf(kbuf + written, buf_size - written,
-			     "stats: vfs_getxattr entries=%lld spoofs=%lld\n",
+			     "stats: vfs_getxattr entries=%lld spoofs=%lld xattr_sid=%lld\n",
 			     atomic64_read(&hymo_hook_stats.getxattr_entries),
-			     atomic64_read(&hymo_hook_stats.getxattr_spoofs));
+			     atomic64_read(&hymo_hook_stats.getxattr_spoofs),
+			     atomic64_read(&hymo_hook_stats.xattr_sid_overrides));
 		written += n;
 
 		list_arg.size = written;
@@ -998,6 +1002,8 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 			if (path.dentry && d_inode(path.dentry)) {
 				target_inode = d_inode(path.dentry);
 				hymo_ihold(target_inode);
+				(void)hymofs_dop_install(path.dentry, src);
+				(void)hymofs_xattr_sid_install(target_inode, src);
 			}
 			path_put(&path);
 		}
@@ -1180,6 +1186,8 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 			if (entry->src_hash == hash && strcmp(entry->src, src) == 0) {
 				hymo_clear_inode_flags_for_path(entry->target,
 								AS_FLAGS_HYMO_SPOOF_KSTAT);
+				(void)hymofs_dop_uninstall_path(entry->target);
+				(void)hymofs_xattr_sid_uninstall_path(entry->target);
 				hlist_del_rcu(&entry->node);
 				hlist_del_rcu(&entry->target_node);
 				atomic_dec(&hymo_rule_count);

@@ -21,6 +21,8 @@
 #include "hymofs_vfs_hooks.h"
 #include "hymofs_uname.h"
 #include "hymofs_sop_override.h"
+#include "hymofs_dop_override.h"
+#include "hymofs_xattr_sid_override.h"
 #include "hymofs_iop_override.h"
 #include "hymofs_fop_override.h"
 #include "hymofs_fake_mountinfo.h"
@@ -191,6 +193,8 @@ int hymofs_bootstrap_init(void)
 		goto err_proc;
 
 	(void)hymofs_sop_override_init();
+	(void)hymofs_dop_override_init();
+	(void)hymofs_xattr_sid_override_init();
 	(void)hymofs_iop_override_init();
 	(void)hymofs_fop_override_init();
 	(void)hymo_fake_mi_init();
@@ -222,6 +226,8 @@ void hymofs_bootstrap_exit(void)
 	hymo_fake_mi_exit();
 	hymofs_fop_override_exit();
 	hymofs_iop_override_exit();
+	hymofs_xattr_sid_override_exit();
+	hymofs_dop_override_exit();
 	hymofs_sop_override_exit();
 	hymofs_vfs_hooks_exit(hymo_skip_vfs_param);
 	hymofs_proc_hooks_exit();

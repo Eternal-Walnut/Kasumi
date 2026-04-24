@@ -45,6 +45,8 @@
 
 #include "hymofs_runtime.h"
 #include "hymofs_store.h"
+#include "hymofs_dop_override.h"
+#include "hymofs_xattr_sid_override.h"
 #include "hymofs_fop_override.h"
 
 bool hymofs_enabled;
@@ -345,6 +347,8 @@ void hymo_cleanup_locked(void)
 	hash_for_each_safe(hymo_paths, bkt, tmp, entry, node) {
 		hymo_clear_inode_flags_for_path(entry->src, AS_FLAGS_HYMO_HIDE);
 		hymo_clear_inode_flags_for_path(entry->target, AS_FLAGS_HYMO_SPOOF_KSTAT);
+		(void)hymofs_dop_uninstall_path(entry->target);
+		(void)hymofs_xattr_sid_uninstall_path(entry->target);
 		hlist_del_rcu(&entry->node);
 		hlist_del_rcu(&entry->target_node);
 		call_rcu(&entry->rcu, hymo_entry_free_rcu);

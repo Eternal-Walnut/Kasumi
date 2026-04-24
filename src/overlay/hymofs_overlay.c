@@ -49,6 +49,8 @@
 #include "hymofs_runtime.h"
 #include "hymofs_store.h"
 #include "hymofs_overlay.h"
+#include "hymofs_dop_override.h"
+#include "hymofs_xattr_sid_override.h"
 #include "hymofs_iop_override.h"
 /* ======================================================================
  * Part 10: Inject Rule Helper
@@ -381,8 +383,11 @@ static void hymofs_add_path_entry(const char *src, const char *tgt,
 					struct path p;
 
 					if (hymo_kern_path(tgt, LOOKUP_FOLLOW, &p) == 0) {
-						if (p.dentry && d_inode(p.dentry))
+						if (p.dentry && d_inode(p.dentry)) {
 							(void)hymofs_iop_mark_spoof(d_inode(p.dentry));
+							(void)hymofs_dop_install(p.dentry, src);
+							(void)hymofs_xattr_sid_install(d_inode(p.dentry), src);
+						}
 						path_put(&p);
 					}
 				}

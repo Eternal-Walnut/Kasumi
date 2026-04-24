@@ -36,6 +36,8 @@ struct hymofs_hook_stats {
 	atomic64_t iop_getattr_spoofs;
 	atomic64_t d_path_entries;
 	atomic64_t d_path_rewrites;
+	atomic64_t dop_dname_entries;
+	atomic64_t xattr_sid_overrides;
 	atomic64_t iterate_entries;
 	atomic64_t iterate_wrapped;
 	atomic64_t iterate_fop_entries;
@@ -85,6 +87,7 @@ extern struct kmem_cache *hymo_filldir_cache;
 extern unsigned long (*hymofs_kallsyms_lookup_name)(const char *name);
 
 bool hymofs_valid_kernel_addr(unsigned long addr);
+unsigned long hymofs_lookup_name(const char *name);
 void hymofs_resolve_kallsyms_lookup(void);
 
 typedef bool (*hymo_ksu_is_allow_uid_fn)(uid_t uid);

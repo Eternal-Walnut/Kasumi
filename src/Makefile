@@ -19,6 +19,8 @@ hymofs_lkm-objs := \
 	hooks/hymofs_ftrace_hooks.o \
 	features/hymofs_uname.o \
 	features/hymofs_sop_override.o \
+	features/hymofs_dop_override.o \
+	features/hymofs_xattr_sid_override.o \
 	features/hymofs_iop_override.o \
 	features/hymofs_fop_override.o \
 	features/hymofs_fake_mountinfo.o

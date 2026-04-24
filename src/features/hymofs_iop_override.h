@@ -26,6 +26,8 @@ void hymofs_iop_override_exit(void);
  * Returns 0 on success or already-installed; negative errno on failure.
  */
 int hymofs_iop_install(struct inode *inode);
+int hymofs_iop_mark_spoof(struct inode *inode);
+void hymofs_iop_cleanup_inode(struct inode *inode);
 
 /*
  * Apply kstat spoofing in place. Extracted from the original vfs_getattr

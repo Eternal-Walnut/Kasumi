@@ -49,6 +49,7 @@
 #include "hymofs_runtime.h"
 #include "hymofs_store.h"
 #include "hymofs_overlay.h"
+#include "hymofs_iop_override.h"
 /* ======================================================================
  * Part 10: Inject Rule Helper
  * ====================================================================== */
@@ -376,6 +377,15 @@ static void hymofs_add_path_entry(const char *src, const char *tgt,
 				set_bit(h1, hymo_path_bloom);
 				set_bit(h2, hymo_path_bloom);
 				atomic_inc(&hymo_rule_count);
+				if (hymo_kern_path) {
+					struct path p;
+
+					if (hymo_kern_path(tgt, LOOKUP_FOLLOW, &p) == 0) {
+						if (p.dentry && d_inode(p.dentry))
+							(void)hymofs_iop_mark_spoof(d_inode(p.dentry));
+						path_put(&p);
+					}
+				}
 			} else {
 				kfree(e->src);
 				kfree(e->target);

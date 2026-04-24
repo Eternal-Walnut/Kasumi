@@ -29,6 +29,26 @@ extern atomic_t hymo_rule_count;
 extern atomic_t hymo_hide_count;
 extern atomic_t hymo_spoof_kstat_count;
 
+struct hymofs_hook_stats {
+	atomic64_t vfs_getattr_entries;
+	atomic64_t vfs_getattr_spoofs;
+	atomic64_t iop_getattr_entries;
+	atomic64_t iop_getattr_spoofs;
+	atomic64_t d_path_entries;
+	atomic64_t d_path_rewrites;
+	atomic64_t iterate_entries;
+	atomic64_t iterate_wrapped;
+	atomic64_t iterate_fop_entries;
+	atomic64_t iterate_fop_wrapped;
+	atomic64_t sop_destroy_inode;
+	atomic64_t filldir_hidden;
+	atomic64_t filldir_injected;
+	atomic64_t getxattr_entries;
+	atomic64_t getxattr_spoofs;
+};
+
+extern struct hymofs_hook_stats hymo_hook_stats;
+
 struct hymo_percpu {
 	unsigned int kprobe_reent;
 	int iterate_did_swap;

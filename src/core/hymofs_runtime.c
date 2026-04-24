@@ -45,10 +45,12 @@
 
 #include "hymofs_runtime.h"
 #include "hymofs_store.h"
+#include "hymofs_fop_override.h"
 
 bool hymofs_enabled;
 atomic_t hymo_rule_count = ATOMIC_INIT(0);
 atomic_t hymo_hide_count = ATOMIC_INIT(0);
+struct hymofs_hook_stats hymo_hook_stats;
 
 struct hymo_percpu *hymo_percpu_base;
 char *hymo_getname_buf_base;
@@ -306,8 +308,12 @@ void hymofs_mark_dir_has_inject(const char *path_str)
 		return;
 	if (hymo_kern_path(path_str, LOOKUP_FOLLOW, &p) != 0)
 		return;
-	if (p.dentry && d_inode(p.dentry) && d_inode(p.dentry)->i_mapping)
-		set_bit(AS_FLAGS_HYMO_DIR_HAS_INJECT, &d_inode(p.dentry)->i_mapping->flags);
+	if (p.dentry && d_inode(p.dentry) && d_inode(p.dentry)->i_mapping) {
+		struct inode *inode = d_inode(p.dentry);
+
+		set_bit(AS_FLAGS_HYMO_DIR_HAS_INJECT, &inode->i_mapping->flags);
+		(void)hymofs_fop_install(inode);
+	}
 	path_put(&p);
 }
 
@@ -338,6 +344,7 @@ void hymo_cleanup_locked(void)
 
 	hash_for_each_safe(hymo_paths, bkt, tmp, entry, node) {
 		hymo_clear_inode_flags_for_path(entry->src, AS_FLAGS_HYMO_HIDE);
+		hymo_clear_inode_flags_for_path(entry->target, AS_FLAGS_HYMO_SPOOF_KSTAT);
 		hlist_del_rcu(&entry->node);
 		hlist_del_rcu(&entry->target_node);
 		call_rcu(&entry->rcu, hymo_entry_free_rcu);
@@ -365,6 +372,8 @@ void hymo_cleanup_locked(void)
 		struct hymo_spoof_kstat_entry *sk_entry;
 
 		hash_for_each_safe(hymo_spoof_kstat_path, bkt, tmp, sk_entry, path_node) {
+			hymo_clear_inode_flags_for_path(sk_entry->target_pathname,
+							AS_FLAGS_HYMO_SPOOF_KSTAT);
 			hlist_del_rcu(&sk_entry->path_node);
 			if (sk_entry->target_ino)
 				hlist_del_rcu(&sk_entry->ino_node);

@@ -47,6 +47,9 @@
 /* Marks an inode as having shadow inode_operations installed (lookup-time i_op override) */
 #define AS_FLAGS_HYMO_IOP_INSTALLED 44
 #define BIT_HYMO_IOP_INSTALLED BIT(44)
+/* Marks a directory inode as having shadow file_operations installed for readdir */
+#define AS_FLAGS_HYMO_FOP_INSTALLED 45
+#define BIT_HYMO_FOP_INSTALLED BIT(45)
 #endif // #ifdef __KERNEL__
 
 /* Syscall number: 142 = SYS_reboot on aarch64; we kprobe __arm64_sys_reboot (5.10 compatible). */

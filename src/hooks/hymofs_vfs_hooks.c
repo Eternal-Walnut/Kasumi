@@ -57,6 +57,7 @@
 #include "hymofs_ftrace_hooks.h"
 #include "hymofs_fake_mountinfo.h"
 #include "hymofs_iop_override.h"
+#include "hymofs_fop_override.h"
 
 #ifndef HYMOFS_VFS_KPROBES
 #define HYMOFS_VFS_KPROBES 1
@@ -92,6 +93,7 @@ hymofs_filldir_filter(struct dir_context *ctx, const char *name,
 				break;
 			ret = w->orig_ctx->actor(w->orig_ctx, item->name, nlen,
 						 inj_pos, 1, item->type);
+			atomic64_inc(&hymo_hook_stats.filldir_injected);
 			list_del(&item->list);
 			kfree(item->name);
 			kfree(item);
@@ -139,6 +141,7 @@ hymofs_filldir_filter(struct dir_context *ctx, const char *name,
 					&(struct qstr)QSTR_INIT(name, namlen));
 				if (child) {
 					dput(child);
+					atomic64_inc(&hymo_hook_stats.filldir_hidden);
 					return HYMO_FILLDIR_CONTINUE;
 				}
 			}
@@ -157,6 +160,7 @@ hymofs_filldir_filter(struct dir_context *ctx, const char *name,
 			    test_bit(AS_FLAGS_HYMO_HIDE,
 				     &cinode->i_mapping->flags)) {
 				dput(child);
+				atomic64_inc(&hymo_hook_stats.filldir_hidden);
 				return HYMO_FILLDIR_CONTINUE;
 			}
 			dput(child);
@@ -741,6 +745,7 @@ HYMO_NOCFI int hymo_krp_vfs_getattr_entry(struct kretprobe_instance *ri,
 	char buf[256];
 	char *dp;
 
+	atomic64_inc(&hymo_hook_stats.vfs_getattr_entries);
 	d->is_target = false;
 	d->stat = NULL;
 	d->mapping = NULL;
@@ -886,6 +891,7 @@ int hymo_krp_vfs_getattr_ret(struct kretprobe_instance *ri,
 	{
 		struct inode *inode = d->mapping ? d->mapping->host : NULL;
 		hymo_apply_kstat_spoof(inode, d->stat);
+		atomic64_inc(&hymo_hook_stats.vfs_getattr_spoofs);
 		/*
 		 * Lookup-time i_op install: after first successful spoof,
 		 * install a shadow inode_operations so future stat()s go
@@ -944,6 +950,7 @@ HYMO_NOCFI int hymo_krp_vfs_getxattr_entry(struct kretprobe_instance *ri,
 	d->value_size = 0;
 	d->src_ctx[0] = '\0';
 	d->src_ctx_len = 0;
+	atomic64_inc(&hymo_hook_stats.getxattr_entries);
 
 	/* Skip when we're in the inner call (resolving source path's context) */
 	if (atomic_long_read(&hymo_xattr_source_tgid) == (long)task_tgid_vnr(current))
@@ -1107,6 +1114,7 @@ int hymo_krp_vfs_getxattr_ret(struct kretprobe_instance *ri,
 	if (d->value_size < ctx_len)
 		return 0;
 	memcpy(d->value_buf, d->src_ctx, ctx_len);
+	atomic64_inc(&hymo_hook_stats.getxattr_spoofs);
 
 #if defined(__aarch64__)
 	regs->regs[0] = (unsigned long)d->src_ctx_len;
@@ -1138,6 +1146,7 @@ HYMO_NOCFI int hymo_krp_d_path_entry(struct kretprobe_instance *ri,
 	char *dp;
 	struct hymo_entry *entry;
 
+	atomic64_inc(&hymo_hook_stats.d_path_entries);
 	d->is_target = false;
 	d->buf = (char *)HYMO_REG1(regs);
 	d->buflen = (int)HYMO_REG2(regs);
@@ -1215,6 +1224,7 @@ int hymo_krp_d_path_ret(struct kretprobe_instance *ri,
 #elif defined(__x86_64__)
 	regs->ax = (unsigned long)new_start;
 #endif
+	atomic64_inc(&hymo_hook_stats.d_path_rewrites);
 
 	return 0;
 }
@@ -1228,33 +1238,51 @@ HYMO_NOCFI int hymo_kp_iterate_dir_pre(struct kprobe *p, struct pt_regs *regs)
 	struct file *file;
 	struct hymofs_filldir_wrapper *w;
 	struct dir_context *orig_ctx;
-	struct inode *dir_inode;
-	const char *dname;
 
 	(void)p;
 	hymo_this_cpu()->iterate_did_swap = 0;
-
-	if (atomic_long_read(&hymo_ioctl_tgid) == (long)task_tgid_vnr(current))
-		return 0;
-	if (hymo_this_cpu()->in_populate_inject)
-		return 0;
-	if (!READ_ONCE(hymofs_enabled))
-		return 0;
-	if (uid_eq(current_uid(), GLOBAL_ROOT_UID))
-		return 0;
-	if (READ_ONCE(hymo_daemon_pid) > 0 && task_tgid_vnr(current) == READ_ONCE(hymo_daemon_pid))
-		return 0;
+	atomic64_inc(&hymo_hook_stats.iterate_entries);
 
 	file = (struct file *)HYMO_REG0(regs);
 	orig_ctx = (struct dir_context *)HYMO_REG1(regs);
+	if (hymofs_fop_file_is_shadowed(file))
+		return 0;
+
+	w = hymofs_iterate_prepare_wrapper(file, orig_ctx);
+	if (!w)
+		return 0;
+
+	atomic64_inc(&hymo_hook_stats.iterate_wrapped);
+	hymo_this_cpu()->iterate_did_swap = 1;
+	HYMO_REG1(regs) = (unsigned long)&w->wrap_ctx;
+	return 0;
+}
+
+struct hymofs_filldir_wrapper *hymofs_iterate_prepare_wrapper(struct file *file,
+							      struct dir_context *orig_ctx)
+{
+	struct hymofs_filldir_wrapper *w;
+	struct inode *dir_inode;
+	const char *dname;
+
+	if (atomic_long_read(&hymo_ioctl_tgid) == (long)task_tgid_vnr(current))
+		return NULL;
+	if (hymo_this_cpu()->in_populate_inject)
+		return NULL;
+	if (!READ_ONCE(hymofs_enabled))
+		return NULL;
+	if (uid_eq(current_uid(), GLOBAL_ROOT_UID))
+		return NULL;
+	if (READ_ONCE(hymo_daemon_pid) > 0 && task_tgid_vnr(current) == READ_ONCE(hymo_daemon_pid))
+		return NULL;
 	if (!orig_ctx || !orig_ctx->actor)
-		return 0;
+		return NULL;
 	if (orig_ctx->actor == hymofs_filldir_filter)
-		return 0;
+		return NULL;
 
 	w = kmem_cache_zalloc(hymo_filldir_cache, GFP_ATOMIC);
 	if (!w)
-		return 0;
+		return NULL;
 
 	w->orig_ctx = orig_ctx;
 	w->wrap_ctx.actor = hymofs_filldir_filter;
@@ -1332,16 +1360,23 @@ HYMO_NOCFI int hymo_kp_iterate_dir_pre(struct kprobe *p, struct pt_regs *regs)
 	if (!w->dir_has_hidden && !w->dir_has_inject &&
 	    (!hymo_stealth_enabled || w->dir_path_len != 4)) {
 		kmem_cache_free(hymo_filldir_cache, w);
-		hymo_this_cpu()->iterate_did_swap = 0;
-		return 0;
+		return NULL;
 	}
 
-	hymo_this_cpu()->iterate_did_swap = 1;
-	HYMO_REG1(regs) = (unsigned long)&w->wrap_ctx;
-	return 0;
+	return w;
 }
 
-static int hymo_krp_iterate_dir_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+void hymofs_iterate_finish_wrapper(struct hymofs_filldir_wrapper *wrapper)
+{
+	if (!wrapper)
+		return;
+	if (wrapper->orig_ctx)
+		wrapper->orig_ctx->pos = wrapper->wrap_ctx.pos;
+	kmem_cache_free(hymo_filldir_cache, wrapper);
+}
+
+static int __maybe_unused hymo_krp_iterate_dir_entry(struct kretprobe_instance *ri,
+						     struct pt_regs *regs)
 {
 	struct hymo_iterate_ri_data *d = (void *)ri->data;
 	struct dir_context *ctx = (struct dir_context *)HYMO_REG1(regs);
@@ -1362,9 +1397,7 @@ int hymo_krp_iterate_dir_ret(struct kretprobe_instance *ri, struct pt_regs *regs
 
 	(void)regs;
 	if (d->did_swap && d->wrapper) {
-		if (d->wrapper->orig_ctx)
-			d->wrapper->orig_ctx->pos = d->wrapper->wrap_ctx.pos;
-		kmem_cache_free(hymo_filldir_cache, d->wrapper);
+		hymofs_iterate_finish_wrapper(d->wrapper);
 		d->wrapper = NULL;
 	}
 	return 0;
@@ -1387,75 +1420,22 @@ static const struct {
 };
 static struct kprobe hymofs_kprobes[HYMOFS_VFS_HOOK_COUNT];
 
-static struct kretprobe hymo_krp_vfs_getattr;
-static struct kretprobe hymo_krp_d_path;
-static struct kretprobe hymo_krp_iterate_dir;
+static struct kretprobe __maybe_unused hymo_krp_vfs_getattr;
+static struct kretprobe __maybe_unused hymo_krp_d_path;
+static struct kretprobe __maybe_unused hymo_krp_iterate_dir;
 static struct kretprobe hymo_krp_vfs_getxattr;
 
 int hymofs_vfs_hooks_init(bool skip_vfs)
 {
 #if HYMOFS_VFS_KPROBES
 	if (!skip_vfs) {
-		size_t i;
 		int ret;
-		size_t start_idx = hymofs_tracepoint_path_registered() ? 1 : 0;
 
-		pr_alert("HymoFS: STAGE 7: registering VFS hooks\n");
-		{
-			unsigned long ft_addr[4];
+		pr_alert("HymoFS: STAGE 7: hot VFS kprobes disabled\n");
+		hymo_vfs_use_ftrace = false;
+		hymo_getxattr_kprobe_registered = 0;
 
-			pr_info("HymoFS: trying ftrace for VFS entry (preferred over kprobes)\n");
-			ret = hymofs_ftrace_try_register(ft_addr);
-			if (ret == 0) {
-				hymo_vfs_getxattr_addr = (void *)ft_addr[3];
-				hymo_vfs_use_ftrace = true;
-				pr_info("HymoFS: ftrace registered for vfs_getattr, d_path, iterate_dir, vfs_getxattr\n");
-				hymo_krp_vfs_getattr.kp.addr = (kprobe_opcode_t *)ft_addr[0];
-				hymo_krp_vfs_getattr.entry_handler = hymo_ftrace_krp_entry;
-				hymo_krp_vfs_getattr.handler = hymo_ftrace_krp_ret;
-				hymo_krp_vfs_getattr.data_size = sizeof(void *);
-				hymo_krp_vfs_getattr.maxactive = 64;
-				ret = register_kretprobe(&hymo_krp_vfs_getattr);
-				if (ret == 0) {
-					hymo_krp_d_path.kp.addr = (kprobe_opcode_t *)ft_addr[1];
-					hymo_krp_d_path.entry_handler = hymo_ftrace_krp_entry;
-					hymo_krp_d_path.handler = hymo_ftrace_krp_ret;
-					hymo_krp_d_path.data_size = sizeof(void *);
-					hymo_krp_d_path.maxactive = 64;
-					ret = register_kretprobe(&hymo_krp_d_path);
-				}
-				if (ret == 0) {
-					hymo_krp_iterate_dir.kp.addr = (kprobe_opcode_t *)ft_addr[2];
-					hymo_krp_iterate_dir.entry_handler = hymo_ftrace_krp_entry;
-					hymo_krp_iterate_dir.handler = hymo_ftrace_krp_ret;
-					hymo_krp_iterate_dir.data_size = sizeof(void *);
-					hymo_krp_iterate_dir.maxactive = 64;
-					ret = register_kretprobe(&hymo_krp_iterate_dir);
-				}
-				if (ret == 0 && ft_addr[3]) {
-					hymo_krp_vfs_getxattr.kp.addr = (kprobe_opcode_t *)ft_addr[3];
-					hymo_krp_vfs_getxattr.entry_handler = hymo_ftrace_krp_entry;
-					hymo_krp_vfs_getxattr.handler = hymo_ftrace_krp_ret;
-					hymo_krp_vfs_getxattr.data_size = sizeof(void *);
-					hymo_krp_vfs_getxattr.maxactive = 64;
-					ret = register_kretprobe(&hymo_krp_vfs_getxattr);
-					if (ret == 0)
-						hymo_getxattr_kprobe_registered = 1;
-				}
-				if (ret != 0) {
-					hymofs_ftrace_unregister();
-					hymo_vfs_use_ftrace = false;
-					unregister_kretprobe(&hymo_krp_vfs_getattr);
-					unregister_kretprobe(&hymo_krp_d_path);
-					unregister_kretprobe(&hymo_krp_iterate_dir);
-					unregister_kretprobe(&hymo_krp_vfs_getxattr);
-				}
-			} else {
-				pr_info("HymoFS: ftrace unavailable (err=%d), using kprobes\n", ret);
-			}
-		}
-
-		if (start_idx == 0) {
+		if (!hymofs_tracepoint_path_registered()) {
 			unsigned long addr = hymofs_lookup_name(hymofs_vfs_hooks[0].name);
 
 			if (!addr) {
@@ -1473,106 +1453,7 @@ int hymofs_vfs_hooks_init(bool skip_vfs)
 			hymo_getname_kprobe_registered = true;
 		}
 
-		if (!hymo_vfs_use_ftrace) {
-			for (i = 1; i < HYMOFS_VFS_HOOK_COUNT; i++) {
-				unsigned long addr = hymofs_lookup_name(hymofs_vfs_hooks[i].name);
-
-				if (!addr) {
-					pr_err("HymoFS: symbol not found: %s\n", hymofs_vfs_hooks[i].name);
-					for (; i > 1; i--)
-						unregister_kprobe(&hymofs_kprobes[i - 1]);
-					if (start_idx == 0)
-						unregister_kprobe(&hymofs_kprobes[0]);
-					return -ENOENT;
-				}
-				hymofs_kprobes[i].addr = (kprobe_opcode_t *)addr;
-				hymofs_kprobes[i].pre_handler = hymofs_vfs_hooks[i].pre;
-				ret = register_kprobe(&hymofs_kprobes[i]);
-				if (ret) {
-					pr_err("HymoFS: register_kprobe(%s) failed: %d\n",
-					       hymofs_vfs_hooks[i].name, ret);
-					for (; i > 1; i--)
-						unregister_kprobe(&hymofs_kprobes[i - 1]);
-					if (start_idx == 0)
-						unregister_kprobe(&hymofs_kprobes[0]);
-					return ret;
-				}
-				pr_info("HymoFS: kprobe %s @0x%lx\n", hymofs_vfs_hooks[i].name, addr);
-			}
-
-			hymo_krp_vfs_getattr.kp.addr = hymofs_kprobes[HYMOFS_VFS_IDX_GETATTR].addr;
-			hymo_krp_vfs_getattr.entry_handler = hymo_krp_vfs_getattr_entry;
-			hymo_krp_vfs_getattr.handler = hymo_krp_vfs_getattr_ret;
-			hymo_krp_vfs_getattr.data_size = sizeof(struct hymo_getattr_ri_data);
-			hymo_krp_vfs_getattr.maxactive = 64;
-			ret = register_kretprobe(&hymo_krp_vfs_getattr);
-			if (ret) {
-				pr_err("HymoFS: register_kretprobe(vfs_getattr) failed: %d\n", ret);
-				for (i = HYMOFS_VFS_HOOK_COUNT; i > 1; i--)
-					unregister_kprobe(&hymofs_kprobes[i - 1]);
-				if (start_idx == 0)
-					unregister_kprobe(&hymofs_kprobes[0]);
-				return ret;
-			}
-			hymo_krp_d_path.kp.addr = hymofs_kprobes[HYMOFS_VFS_IDX_DPATH].addr;
-			hymo_krp_d_path.entry_handler = hymo_krp_d_path_entry;
-			hymo_krp_d_path.handler = hymo_krp_d_path_ret;
-			hymo_krp_d_path.data_size = sizeof(struct hymo_d_path_ri_data);
-			hymo_krp_d_path.maxactive = 64;
-			ret = register_kretprobe(&hymo_krp_d_path);
-			if (ret) {
-				pr_err("HymoFS: register_kretprobe(d_path) failed: %d\n", ret);
-				unregister_kretprobe(&hymo_krp_vfs_getattr);
-				for (i = HYMOFS_VFS_HOOK_COUNT; i > 1; i--)
-					unregister_kprobe(&hymofs_kprobes[i - 1]);
-				if (start_idx == 0)
-					unregister_kprobe(&hymofs_kprobes[0]);
-				return ret;
-			}
-			hymo_krp_iterate_dir.kp.addr = hymofs_kprobes[HYMOFS_VFS_IDX_ITERDIR].addr;
-			hymo_krp_iterate_dir.entry_handler = hymo_krp_iterate_dir_entry;
-			hymo_krp_iterate_dir.handler = hymo_krp_iterate_dir_ret;
-			hymo_krp_iterate_dir.data_size = sizeof(struct hymo_iterate_ri_data);
-			hymo_krp_iterate_dir.maxactive = 64;
-			ret = register_kretprobe(&hymo_krp_iterate_dir);
-			if (ret) {
-				pr_err("HymoFS: register_kretprobe(iterate_dir) failed: %d\n", ret);
-				unregister_kretprobe(&hymo_krp_d_path);
-				unregister_kretprobe(&hymo_krp_vfs_getattr);
-				for (i = HYMOFS_VFS_HOOK_COUNT; i > 1; i--)
-					unregister_kprobe(&hymofs_kprobes[i - 1]);
-				if (start_idx == 0)
-					unregister_kprobe(&hymofs_kprobes[0]);
-				return ret;
-			}
-			pr_info("HymoFS: kretprobes vfs_getattr, d_path, iterate_dir registered\n");
-
-			{
-				unsigned long xattr_addr = hymofs_lookup_name("vfs_getxattr");
-
-				if (xattr_addr) {
-					hymo_vfs_getxattr_addr = (void *)xattr_addr;
-					hymo_krp_vfs_getxattr.kp.addr = (kprobe_opcode_t *)xattr_addr;
-					hymo_krp_vfs_getxattr.entry_handler = hymo_krp_vfs_getxattr_entry;
-					hymo_krp_vfs_getxattr.handler = hymo_krp_vfs_getxattr_ret;
-					hymo_krp_vfs_getxattr.data_size = sizeof(struct hymo_getxattr_ri_data);
-					hymo_krp_vfs_getxattr.maxactive = 64;
-					ret = register_kretprobe(&hymo_krp_vfs_getxattr);
-					if (ret == 0) {
-						hymo_getxattr_kprobe_registered = 1;
-						pr_info("HymoFS: kretprobe vfs_getxattr registered (SELinux spoof)\n");
-					} else {
-						pr_warn("HymoFS: register_kretprobe(vfs_getxattr) failed: %d\n", ret);
-					}
-				} else {
-					pr_warn("HymoFS: vfs_getxattr not found, SELinux context spoofing disabled\n");
-				}
-			}
-		}
-
-		pr_info("HymoFS: initialized (%d VFS %s + GET_FD via %s)\n",
-			(int)(HYMOFS_VFS_HOOK_COUNT - (hymofs_tracepoint_path_registered() ? 1 : 0)),
-			hymo_vfs_use_ftrace ? "ftrace" : "kprobes",
+		pr_info("HymoFS: initialized (getattr=iop, readdir=fop, d_path=disabled, getxattr kprobe=disabled, GET_FD via %s)\n",
 			hymofs_tracepoint_path_registered() && hymofs_tracepoint_getfd_registered() ?
 				"sys_enter/sys_exit tracepoint" : "kprobes");
 	} else {
@@ -1591,25 +1472,13 @@ void hymofs_vfs_hooks_exit(bool skip_vfs)
 {
 #if HYMOFS_VFS_KPROBES
 	if (!skip_vfs) {
-		if (hymo_vfs_use_ftrace) {
-			hymofs_ftrace_unregister();
-			if (hymo_getxattr_kprobe_registered)
-				unregister_kretprobe(&hymo_krp_vfs_getxattr);
-			unregister_kretprobe(&hymo_krp_iterate_dir);
-			unregister_kretprobe(&hymo_krp_d_path);
-			unregister_kretprobe(&hymo_krp_vfs_getattr);
-			if (hymo_getname_kprobe_registered)
-				unregister_kprobe(&hymofs_kprobes[0]);
-		} else {
-			size_t i, start = hymo_getname_kprobe_registered ? 0 : 1;
-
-			if (hymo_getxattr_kprobe_registered)
-				unregister_kretprobe(&hymo_krp_vfs_getxattr);
-			unregister_kretprobe(&hymo_krp_iterate_dir);
-			unregister_kretprobe(&hymo_krp_d_path);
-			unregister_kretprobe(&hymo_krp_vfs_getattr);
-			for (i = start; i < HYMOFS_VFS_HOOK_COUNT; i++)
-				unregister_kprobe(&hymofs_kprobes[i]);
+		if (hymo_getxattr_kprobe_registered) {
+			unregister_kretprobe(&hymo_krp_vfs_getxattr);
+			hymo_getxattr_kprobe_registered = 0;
+		}
+		if (hymo_getname_kprobe_registered) {
+			unregister_kprobe(&hymofs_kprobes[0]);
+			hymo_getname_kprobe_registered = false;
 		}
 	}
 #else

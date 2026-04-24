@@ -20,7 +20,9 @@
 #include "hymofs_proc_hooks.h"
 #include "hymofs_vfs_hooks.h"
 #include "hymofs_uname.h"
+#include "hymofs_sop_override.h"
 #include "hymofs_iop_override.h"
+#include "hymofs_fop_override.h"
 #include "hymofs_fake_mountinfo.h"
 
 #ifndef HYMOFS_VERSION
@@ -188,7 +190,9 @@ int hymofs_bootstrap_init(void)
 	if (ret)
 		goto err_proc;
 
+	(void)hymofs_sop_override_init();
 	(void)hymofs_iop_override_init();
+	(void)hymofs_fop_override_init();
 	(void)hymo_fake_mi_init();
 	return 0;
 
@@ -216,7 +220,9 @@ void hymofs_bootstrap_exit(void)
 	pr_info("HymoFS: shutting down\n");
 
 	hymo_fake_mi_exit();
+	hymofs_fop_override_exit();
 	hymofs_iop_override_exit();
+	hymofs_sop_override_exit();
 	hymofs_vfs_hooks_exit(hymo_skip_vfs_param);
 	hymofs_proc_hooks_exit();
 	hymofs_uname_exit();

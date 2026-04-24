@@ -18,7 +18,9 @@ hymofs_lkm-objs := \
 	hooks/hymofs_tracepoint_hooks.o \
 	hooks/hymofs_ftrace_hooks.o \
 	features/hymofs_uname.o \
+	features/hymofs_sop_override.o \
 	features/hymofs_iop_override.o \
+	features/hymofs_fop_override.o \
 	features/hymofs_fake_mountinfo.o
 
 ccflags-y += -gz=none

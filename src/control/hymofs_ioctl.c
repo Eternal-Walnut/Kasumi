@@ -52,6 +52,8 @@
 #include "hymofs_overlay.h"
 #include "hymofs_tracepoint_hooks.h"
 #include "hymofs_uname.h"
+#include "hymofs_iop_override.h"
+#include "hymofs_fop_override.h"
 #include "hymofs_fake_mountinfo.h"
 /* ======================================================================
  * Part 15: Dispatch Handler (ioctl only; all commands use HYMO_IOC_* from hymofs_uapi.h)
@@ -324,12 +326,23 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 		/* Auto-resolve target_ino from path if userspace did not supply one. */
 		if (have_path && k->target_ino == 0 && hymo_kern_path) {
 			if (hymo_kern_path(k->target_pathname, LOOKUP_FOLLOW, &resolved) == 0) {
-				if (resolved.dentry && d_inode(resolved.dentry))
-					auto_ino = (unsigned long)d_inode(resolved.dentry)->i_ino;
+				if (resolved.dentry && d_inode(resolved.dentry)) {
+					struct inode *inode = d_inode(resolved.dentry);
+
+					auto_ino = (unsigned long)inode->i_ino;
+					(void)hymofs_iop_mark_spoof(inode);
+				}
 				path_put(&resolved);
 			}
 			if (auto_ino)
 				k->target_ino = auto_ino;
+		}
+		if (have_path && k->target_ino != 0 && hymo_kern_path) {
+			if (hymo_kern_path(k->target_pathname, LOOKUP_FOLLOW, &resolved) == 0) {
+				if (resolved.dentry && d_inode(resolved.dentry))
+					(void)hymofs_iop_mark_spoof(d_inode(resolved.dentry));
+				path_put(&resolved);
+			}
 		}
 
 		if (!have_path && !k->target_ino) {
@@ -577,8 +590,8 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 			return -EFAULT;
 
 		buf_size = list_arg.size;
-		if (buf_size > 2048)
-			buf_size = 2048;
+		if (buf_size > 4096)
+			buf_size = 4096;
 
 		kbuf = kzalloc(buf_size, GFP_KERNEL);
 		if (!kbuf)
@@ -611,9 +624,12 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 		if (hymo_vfs_use_ftrace)
 			n = scnprintf(kbuf + written, buf_size - written,
 				     "vfs_getattr,d_path,iterate_dir,vfs_getxattr: ftrace+kretprobe\n");
+		else if (hymo_getxattr_kprobe_registered)
+			n = scnprintf(kbuf + written, buf_size - written,
+				     "vfs: getattr=iop readdir=fop d_path=none getxattr=kretprobe\n");
 		else
 			n = scnprintf(kbuf + written, buf_size - written,
-				     "vfs_getattr,d_path,iterate_dir,vfs_getxattr: kprobe+kretprobe\n");
+				     "vfs: getattr=iop readdir=fop d_path=none getxattr=none\n");
 		written += n;
 
 		/* uname */
@@ -692,6 +708,37 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 				     "statfs: kretprobe (f_type spoof for INCONSISTENT_MOUNT)\n");
 		else
 			n = scnprintf(kbuf + written, buf_size - written, "statfs: none\n");
+		written += n;
+
+		n = scnprintf(kbuf + written, buf_size - written,
+			     "stats: vfs_getattr entries=%lld spoofs=%lld\n",
+			     atomic64_read(&hymo_hook_stats.vfs_getattr_entries),
+			     atomic64_read(&hymo_hook_stats.vfs_getattr_spoofs));
+		written += n;
+		n = scnprintf(kbuf + written, buf_size - written,
+			     "stats: iop_getattr entries=%lld spoofs=%lld sop_destroy_inode=%lld\n",
+			     atomic64_read(&hymo_hook_stats.iop_getattr_entries),
+			     atomic64_read(&hymo_hook_stats.iop_getattr_spoofs),
+			     atomic64_read(&hymo_hook_stats.sop_destroy_inode));
+		written += n;
+		n = scnprintf(kbuf + written, buf_size - written,
+			     "stats: d_path entries=%lld rewrites=%lld\n",
+			     atomic64_read(&hymo_hook_stats.d_path_entries),
+			     atomic64_read(&hymo_hook_stats.d_path_rewrites));
+		written += n;
+		n = scnprintf(kbuf + written, buf_size - written,
+			     "stats: iterate entries=%lld wrapped=%lld fop_entries=%lld fop_wrapped=%lld filldir_hidden=%lld filldir_injected=%lld\n",
+			     atomic64_read(&hymo_hook_stats.iterate_entries),
+			     atomic64_read(&hymo_hook_stats.iterate_wrapped),
+			     atomic64_read(&hymo_hook_stats.iterate_fop_entries),
+			     atomic64_read(&hymo_hook_stats.iterate_fop_wrapped),
+			     atomic64_read(&hymo_hook_stats.filldir_hidden),
+			     atomic64_read(&hymo_hook_stats.filldir_injected));
+		written += n;
+		n = scnprintf(kbuf + written, buf_size - written,
+			     "stats: vfs_getxattr entries=%lld spoofs=%lld\n",
+			     atomic64_read(&hymo_hook_stats.getxattr_entries),
+			     atomic64_read(&hymo_hook_stats.getxattr_spoofs));
 		written += n;
 
 		list_arg.size = written;
@@ -818,6 +865,7 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 		struct path path;
 		struct inode *src_inode = NULL;
 		struct inode *parent_inode = NULL;
+		struct inode *target_inode = NULL;
 		char *tmp_buf;
 
 		if (!src || !target) { ret = -EINVAL; break; }
@@ -945,6 +993,18 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 			hymofs_add_inject_rule(parent_dir);
 			hymofs_mark_dir_has_inject(parent_dir);
 		}
+		if (target && hymo_kern_path &&
+		    hymo_kern_path(target, LOOKUP_FOLLOW, &path) == 0) {
+			if (path.dentry && d_inode(path.dentry)) {
+				target_inode = d_inode(path.dentry);
+				hymo_ihold(target_inode);
+			}
+			path_put(&path);
+		}
+		if (target_inode) {
+			(void)hymofs_iop_mark_spoof(target_inode);
+			iput(target_inode);
+		}
 
 		/* Do not mark redirect source as hidden: we do not inject a virtual
 		 * entry for simple ADD_RULE, so hiding would make the file disappear
@@ -998,9 +1058,11 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 			iput(target_inode);
 		}
 		if (parent_inode) {
-			if (parent_inode->i_mapping)
+			if (parent_inode->i_mapping) {
 				set_bit(AS_FLAGS_HYMO_DIR_HAS_HIDDEN,
 					&parent_inode->i_mapping->flags);
+				(void)hymofs_fop_install(parent_inode);
+			}
 			iput(parent_inode);
 		}
 
@@ -1116,6 +1178,8 @@ static int hymo_dispatch_cmd(unsigned int cmd, void __user *arg)
 		hlist_for_each_entry(entry,
 			&hymo_paths[hash_min(hash, HYMO_HASH_BITS)], node) {
 			if (entry->src_hash == hash && strcmp(entry->src, src) == 0) {
+				hymo_clear_inode_flags_for_path(entry->target,
+								AS_FLAGS_HYMO_SPOOF_KSTAT);
 				hlist_del_rcu(&entry->node);
 				hlist_del_rcu(&entry->target_node);
 				atomic_dec(&hymo_rule_count);

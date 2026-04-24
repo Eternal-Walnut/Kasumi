@@ -113,7 +113,7 @@ HYMO_NOCFI static int hymo_shadow_getattr(struct user_namespace *userns,
 	if (orig && orig->getattr)
 		ret = orig->getattr(userns, path, stat, request_mask, query_flags);
 	else {
-		generic_fillattr(userns, request_mask, inode, stat);
+		generic_fillattr(userns, inode, stat);
 		ret = 0;
 	}
 

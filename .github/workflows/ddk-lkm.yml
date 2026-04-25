@@ -1,4 +1,4 @@
-name: Build HymoFS Kernel Module
+name: Build Kasumi Kernel Module
 
 on:
   workflow_call:
@@ -11,8 +11,8 @@ on:
         description: "KMI version"
         required: true
         type: string
-      hymofs_ref:
-        description: "HymoFS git ref (branch/tag/commit)"
+      kasumi_ref:
+        description: "Kasumi git ref (branch/tag/commit)"
         required: false
         default: "main"
         type: string
@@ -23,8 +23,8 @@ on:
         type: string
 
 jobs:
-  build-hymofs-ko:
-    name: Build hymofs_lkm.ko for ${{ inputs.kmi }}
+  build-kasumi-ko:
+    name: Build kasumi_lkm.ko for ${{ inputs.kmi }}
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/ylarod/ddk:${{ inputs.kmi }}-${{ inputs.ddk_release }}
@@ -57,7 +57,7 @@ jobs:
           VERSION=$((COMMIT_NUM + 200))
           echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Build hymofs_lkm.ko
+      - name: Build kasumi_lkm.ko
         run: |
           set -euo pipefail
           if [ -z "${KDIR:-}" ] || [ ! -f "$KDIR/Makefile" ]; then
@@ -66,20 +66,20 @@ jobs:
           fi
 
           VERSION="${{ steps.parse_version.outputs.VERSION }}"
-          echo "Building hymofs_lkm.ko with KDIR=$KDIR"
+          echo "Building kasumi_lkm.ko with KDIR=$KDIR"
           (
             make -j"$(nproc --all)" CC=clang \
-              CFLAGS_MODULE="-DHYMOFS_VERSION=\\\"0.1.${VERSION}\\\""
+              CFLAGS_MODULE="-DKASUMI_VERSION=\\\"0.1.${VERSION}\\\""
           )
 
           mkdir -p "$OUT"
-          KO_FILE="${KMI}_${TARGET_ARCH}_hymofs_lkm.ko"
-          cp "src/hymofs_lkm.ko" "$OUT/$KO_FILE"
+          KO_FILE="${KMI}_${TARGET_ARCH}_kasumi_lkm.ko"
+          cp "src/kasumi_lkm.ko" "$OUT/$KO_FILE"
           llvm-strip -d "$OUT/$KO_FILE" 2>/dev/null || true
           ls -la "$OUT/"
 
       - name: Upload .ko
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.kmi }}_${{env.TARGET_ARCH }}_hymofs_lkm.ko
-          path: ${{ env.OUT }}/${{ inputs.kmi }}_${{ env.TARGET_ARCH }}_hymofs_lkm.ko
+          name: ${{ inputs.kmi }}_${{env.TARGET_ARCH }}_kasumi_lkm.ko
+          path: ${{ env.OUT }}/${{ inputs.kmi }}_${{ env.TARGET_ARCH }}_kasumi_lkm.ko

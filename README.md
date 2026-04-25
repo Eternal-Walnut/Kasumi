@@ -1,8 +1,10 @@
-# HymoFS
+# Kasumi
 
-HymoFS is an out-of-tree Linux kernel module (`hymofs_lkm.ko`) for Android GKI/Linux path control in root/SU environments.
+Kasumi is an out-of-tree Linux kernel module (`kasumi_lkm.ko`) for Android GKI/Linux path control in root/SU environments.
 
 It provides redirection, hiding, merge/injection, and spoofing behavior through an anonymous-fd + `ioctl` control plane.
+
+Kasumi was previously developed as HymoFS. The project name, module name, userspace ABI, and public symbols now use Kasumi/KSM naming; HymoFS should be treated as a historical name.
 
 中文版本: [README.zh-CN.md](./README.zh-CN.md)
 
@@ -10,8 +12,8 @@ It provides redirection, hiding, merge/injection, and spoofing behavior through 
 
 - Repository type: LKM (not an in-tree kernel patch set)
 - Main code: `src/`
-- Control protocol: `src/include/hymofs_uapi.h`
-- Current protocol version: `HYMO_PROTOCOL_VERSION = 15`
+- Control protocol: `src/include/kasumi_uapi.h`
+- Current protocol version: `KSM_PROTOCOL_VERSION = 15`
 - Hook strategy: ftrace/tracepoint first when available, with kprobe/kretprobe fallback
 - 6.6+ compatibility for `arch_ftrace_get_regs` is included in current code
 
@@ -71,51 +73,51 @@ make -C /path/to/kernel ARCH=arm64 M=$(pwd)/src modules
 ## Load and Debug Parameters
 
 ```sh
-insmod hymofs_lkm.ko
+insmod kasumi_lkm.ko
 ```
 
 If symbol export limitations prevent loading, and you are using newer KernelSU or its forks, you can also try:
 
 ```sh
-ksud insmod hymofs_lkm.ko
+ksud insmod kasumi_lkm.ko
 ```
 
-Common module parameters in `src/core/hymofs_bootstrap.c`:
+Common module parameters in `src/core/kasumi_bootstrap.c`:
 
-- `hymo_syscall_nr`
-- `hymo_no_tracepoint=1`
-- `hymo_skip_vfs=1`
-- `hymo_skip_extra_kprobes=1`
-- `hymo_skip_getfd=1`
-- `hymo_skip_kallsyms=1`
-- `hymo_dummy_mode=1`
+- `kasumi_syscall_nr`
+- `kasumi_no_tracepoint=1`
+- `kasumi_skip_vfs=1`
+- `kasumi_skip_extra_kprobes=1`
+- `kasumi_skip_getfd=1`
+- `kasumi_skip_kallsyms=1`
+- `kasumi_dummy_mode=1`
 
 ## Userspace Control Plane
 
 1. Userspace obtains an anonymous fd through GET_FD (root-only).
 2. Userspace sends `ioctl` on that fd to manage rules/features.
 
-Main ioctls (see `src/include/hymofs_uapi.h` for full ABI):
+Main ioctls (see `src/include/kasumi_uapi.h` for full ABI):
 
-- `HYMO_IOC_ADD_RULE`, `HYMO_IOC_DEL_RULE`, `HYMO_IOC_HIDE_RULE`
-- `HYMO_IOC_ADD_MERGE_RULE`, `HYMO_IOC_CLEAR_ALL`, `HYMO_IOC_SET_ENABLED`
-- `HYMO_IOC_GET_FEATURES`, `HYMO_IOC_GET_HOOKS`, `HYMO_IOC_LIST_RULES`
-- `HYMO_IOC_ADD_SPOOF_KSTAT`, `HYMO_IOC_UPDATE_SPOOF_KSTAT`
-- `HYMO_IOC_SET_UNAME`, `HYMO_IOC_SET_CMDLINE`
-- `HYMO_IOC_ADD_MAPS_RULE`, `HYMO_IOC_CLEAR_MAPS_RULES`
-- `HYMO_IOC_SET_MOUNT_HIDE`, `HYMO_IOC_SET_MAPS_SPOOF`, `HYMO_IOC_SET_STATFS_SPOOF`
+- `KSM_IOC_ADD_RULE`, `KSM_IOC_DEL_RULE`, `KSM_IOC_HIDE_RULE`
+- `KSM_IOC_ADD_MERGE_RULE`, `KSM_IOC_CLEAR_ALL`, `KSM_IOC_SET_ENABLED`
+- `KSM_IOC_GET_FEATURES`, `KSM_IOC_GET_HOOKS`, `KSM_IOC_LIST_RULES`
+- `KSM_IOC_ADD_SPOOF_KSTAT`, `KSM_IOC_UPDATE_SPOOF_KSTAT`
+- `KSM_IOC_SET_UNAME`, `KSM_IOC_SET_CMDLINE`
+- `KSM_IOC_ADD_MAPS_RULE`, `KSM_IOC_CLEAR_MAPS_RULES`
+- `KSM_IOC_SET_MOUNT_HIDE`, `KSM_IOC_SET_MAPS_SPOOF`, `KSM_IOC_SET_STATFS_SPOOF`
 
-For userspace integration, you can reuse [hymo](https://github.com/Anatdx/hymo) (C++) to reduce ABI mismatch risk.  
-You can also use [YukiSU](https://github.com/Anatdx/YukiSU) (C++) for KernelSU-integrated flows.  
-In addition, the [hybrid-mount](https://github.com/Hybrid-Mount/meta-hybrid_mount) meta-module includes HymoFS support with a Rust userspace implementation.  
+For userspace integration, you can reuse [kasumi](https://github.com/Anatdx/kasumi) (C++) to reduce ABI mismatch risk.
+You can also use [YukiSU](https://github.com/Anatdx/YukiSU) (C++) for KernelSU-integrated flows.
+In addition, the [hybrid-mount](https://github.com/Hybrid-Mount/meta-hybrid_mount) meta-module includes Kasumi support with a Rust userspace implementation.
 
 > Given mount logic quality and update cadence, hybrid-mount is generally the preferred meta-module choice.
 
 ## Quick Troubleshooting
 
-- `Unknown symbol __tracepoint_sys_enter`: try `hymo_no_tracepoint=1`
+- `Unknown symbol __tracepoint_sys_enter`: try `kasumi_no_tracepoint=1`
 - Builds but cannot load: check `vermagic`, module signature policy, and `dmesg`
-- Hook/ABI changes: validate with `HYMO_IOC_GET_HOOKS` and `HYMO_IOC_GET_FEATURES`
+- Hook/ABI changes: validate with `KSM_IOC_GET_HOOKS` and `KSM_IOC_GET_FEATURES`
 
 ## Repository Layout
 

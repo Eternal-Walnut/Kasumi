@@ -4,26 +4,26 @@
 KDIR ?= /lib/modules/$(shell uname -r)/build
 MDIR := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
-obj-m += hymofs_lkm.o
-hymofs_lkm-objs := \
-	hymofs_main.o \
-	core/hymofs_bootstrap.o \
-	core/hymofs_runtime.o \
-	control/hymofs_ioctl.o \
-	policy/hymofs_path_policy.o \
-	overlay/hymofs_overlay.o \
-	hooks/hymofs_proc_hooks.o \
-	hooks/hymofs_proc_read_hooks.o \
-	hooks/hymofs_vfs_hooks.o \
-	hooks/hymofs_tracepoint_hooks.o \
-	hooks/hymofs_ftrace_hooks.o \
-	features/hymofs_uname.o \
-	features/hymofs_sop_override.o \
-	features/hymofs_dop_override.o \
-	features/hymofs_xattr_sid_override.o \
-	features/hymofs_iop_override.o \
-	features/hymofs_fop_override.o \
-	features/hymofs_fake_mountinfo.o
+obj-m += kasumi_lkm.o
+kasumi_lkm-objs := \
+	kasumi_main.o \
+	core/kasumi_bootstrap.o \
+	core/kasumi_runtime.o \
+	control/kasumi_ioctl.o \
+	policy/kasumi_path_policy.o \
+	overlay/kasumi_overlay.o \
+	hooks/kasumi_proc_hooks.o \
+	hooks/kasumi_proc_read_hooks.o \
+	hooks/kasumi_vfs_hooks.o \
+	hooks/kasumi_tracepoint_hooks.o \
+	hooks/kasumi_ftrace_hooks.o \
+	features/kasumi_uname.o \
+	features/kasumi_sop_override.o \
+	features/kasumi_dop_override.o \
+	features/kasumi_xattr_sid_override.o \
+	features/kasumi_iop_override.o \
+	features/kasumi_fop_override.o \
+	features/kasumi_fake_mountinfo.o
 
 ccflags-y += -gz=none
 ccflags-y += -I$(src)/include
@@ -38,7 +38,7 @@ ccflags-y += -I$(src)/features
 # They must follow target kernel Kconfig, otherwise some arches/toolchains
 # (e.g. x86 with missing fentry flags) fail at asm/ftrace.h checks.
 # Do NOT add -fno-sanitize=cfi here: init/exit must have kernel-expected CFI type for
-# do_one_initcall. Use HYMO_NOCFI only on functions that make indirect calls to resolved symbols.
+# do_one_initcall. Use KASUMI_NOCFI only on functions that make indirect calls to resolved symbols.
 
 all:
 	$(MAKE) -C $(KDIR) M=$(MDIR) ARCH=arm64 modules

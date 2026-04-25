@@ -59,7 +59,7 @@ patch_workspace/
 .DS_Store
 
 # Telegram bot session (contains auth, do not commit)
-scripts/.hymobot_session
+scripts/.kasumibot_session
 
 .ddk-version
 compile_commands.json

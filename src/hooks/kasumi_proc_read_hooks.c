@@ -687,24 +687,40 @@ static size_t kasumi_filter_maps_lines(char *kbuf, size_t len)
 	while (in < len) {
 		size_t line_start;
 		size_t line_len;
+		bool complete_line;
 
 		line_start = in;
 		while (in < len && kbuf[in] != '\n')
 			in++;
-		if (in <= line_start) {
-			if (in < len)
+
+		complete_line = in < len && kbuf[in] == '\n';
+		line_len = in - line_start;
+		if (complete_line)
+			line_len++;
+
+		if (line_len == 0) {
+			if (complete_line) {
+				if (out != line_start)
+					kbuf[out] = '\n';
+				out++;
 				in++;
+			}
 			continue;
 		}
-		line_len = in - line_start;
-		if (kbuf[in] == '\n')
-			line_len++;
+
+		if (!complete_line) {
+			if (out != line_start)
+				memmove(kbuf + out, kbuf + line_start, line_len);
+			out += line_len;
+			break;
+		}
+
 		if (kasumi_parse_maps_line(kbuf + line_start, line_len,
 					 &start, &end, flags, &pgoff, &dev, &ino, &pathname) != 0) {
 			if (out != line_start)
 				memmove(kbuf + out, kbuf + line_start, line_len);
 			out += line_len;
-			in += (in < len && kbuf[in] == '\n') ? 1 : 0;
+			in++;
 			continue;
 		}
 		spoof_ino = ino;
@@ -756,8 +772,7 @@ static size_t kasumi_filter_maps_lines(char *kbuf, size_t len)
 				memmove(kbuf + out, kbuf + line_start, line_len);
 			out += line_len;
 		}
-		if (in < len && kbuf[in] == '\n')
-			in++;
+		in++;
 	}
 	return out;
 }

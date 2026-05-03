@@ -997,7 +997,7 @@ KASUMI_NOCFI int kasumi_krp_vfs_getxattr_entry(struct kretprobe_instance *ri,
 	if (!test_bit(AS_FLAGS_KASUMI_SPOOF_KSTAT, &inode->i_mapping->flags))
 		return 0;
 
-	tmp = kmalloc(256 + 256 + 256 + 256 + 512, GFP_KERNEL);
+	tmp = kmalloc(256 + 256 + KSM_MAX_LEN_PATHNAME + 256 + 256 + 512, GFP_KERNEL);
 	if (!tmp)
 		return 0;
 
@@ -1015,8 +1015,12 @@ KASUMI_NOCFI int kasumi_krp_vfs_getxattr_entry(struct kretprobe_instance *ri,
 		if (snprintf(tmp + 256, 256, "/data%s", dp) < 256)
 			entry = kasumi_reverse_lookup_target(tmp + 256);
 	}
+	if (entry && entry->src && strlen(entry->src) < KSM_MAX_LEN_PATHNAME)
+		strscpy(tmp + 512, entry->src, KSM_MAX_LEN_PATHNAME);
+	else
+		*(tmp + 512) = '\0';
 	rcu_read_unlock();
-	if (!entry || !entry->src)
+	if (*(tmp + 512) == '\0')
 		goto out_free;
 
 	/* Resolve source path (bypass redirect) and get its actual SELinux context.
@@ -1025,11 +1029,12 @@ KASUMI_NOCFI int kasumi_krp_vfs_getxattr_entry(struct kretprobe_instance *ri,
 	 * path (e.g. /system/product -> /product), then try resolved+remainder. */
 	atomic_long_set(&kasumi_xattr_source_tgid, (long)task_tgid_vnr(current));
 	if (kasumi_kern_path) {
-		char *parent = tmp + 512;
-		char *resolved = tmp + 768;
-		char *alt = tmp + 1024;
-		const char *try_path = entry->src;
-		size_t len = strlen(entry->src);
+		char *src_copy = tmp + 512;
+		char *parent = src_copy + KSM_MAX_LEN_PATHNAME;
+		char *resolved = parent + 256;
+		char *alt = resolved + 256;
+		const char *try_path = src_copy;
+		size_t len = strlen(src_copy);
 		size_t parent_len;
 
 		while (try_path && len > 1) {

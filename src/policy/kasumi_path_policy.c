@@ -41,6 +41,7 @@
 #include <linux/mount.h>
 #include <linux/xattr.h>
 #include <linux/seq_file.h>
+#include <linux/rcupdate.h>
 #include <uapi/linux/magic.h>
 #ifndef EROFS_SUPER_MAGIC
 #define EROFS_SUPER_MAGIC 0xe0f5e1e2
@@ -69,12 +70,21 @@ static bool kasumi_uid_in_allowlist(uid_t uid)
 {
 	void *p;
 
-	if (!READ_ONCE(kasumi_allowlist_loaded))
-		return false;
 	rcu_read_lock();
+	if (!READ_ONCE(kasumi_allowlist_loaded)) {
+		rcu_read_unlock();
+		return false;
+	}
 	p = xa_load(&kasumi_allow_uids_xa, uid);
 	rcu_read_unlock();
 	return p != NULL;
+}
+
+static void kasumi_clear_allowlist_cache(void)
+{
+	WRITE_ONCE(kasumi_allowlist_loaded, false);
+	synchronize_rcu();
+	xa_destroy(&kasumi_allow_uids_xa);
 }
 
 /*
@@ -134,7 +144,7 @@ bool kasumi_should_apply_hide_rules(void)
 	 */
 	if (kasumi_uid_is_isolated(uid))
 		return true;
-	if (!kasumi_allowlist_loaded)
+	if (!READ_ONCE(kasumi_allowlist_loaded))
 		return false;
 	return kasumi_uid_in_allowlist(uid);
 }
@@ -199,8 +209,7 @@ KASUMI_NOCFI bool kasumi_reload_ksu_allowlist(void)
 
 	/* Path 1: primary symbol resolved — no cache needed, gate is real-time. */
 	if (kasumi_ksu_uid_should_umount_ptr) {
-		xa_destroy(&kasumi_allow_uids_xa);
-		kasumi_allowlist_loaded = true;
+		kasumi_clear_allowlist_cache();
 		mutex_unlock(&kasumi_config_mutex);
 		return true;
 	}
@@ -216,11 +225,11 @@ KASUMI_NOCFI bool kasumi_reload_ksu_allowlist(void)
 							     &out_len, &out_total, false);
 
 			if (ok) {
-				xa_destroy(&kasumi_allow_uids_xa);
-				kasumi_allowlist_loaded = true;
+				kasumi_clear_allowlist_cache();
 				for (count = 0; count < out_len && count < KASUMI_ALLOWLIST_UID_MAX; count++)
 					if (arr[count] > 0)
 						kasumi_add_allow_uid((uid_t)arr[count]);
+				WRITE_ONCE(kasumi_allowlist_loaded, true);
 				if (out_len < out_total)
 					kasumi_log("allowlist truncated at %u (total %u)\n",
 						 out_len, out_total);
@@ -240,8 +249,7 @@ KASUMI_NOCFI bool kasumi_reload_ksu_allowlist(void)
 
 	fp = kasumi_filp_open(KASUMI_KSU_ALLOWLIST_PATH, O_RDONLY, 0);
 	if (IS_ERR(fp)) {
-		xa_destroy(&kasumi_allow_uids_xa);
-		kasumi_allowlist_loaded = false;
+		kasumi_clear_allowlist_cache();
 		mutex_unlock(&kasumi_config_mutex);
 		return false;
 	}
@@ -256,8 +264,7 @@ KASUMI_NOCFI bool kasumi_reload_ksu_allowlist(void)
 		goto bad;
 	}
 
-	xa_destroy(&kasumi_allow_uids_xa);
-	kasumi_allowlist_loaded = true;
+	kasumi_clear_allowlist_cache();
 
 	while (kasumi_kernel_read(fp, &profile, sizeof(profile), &off) == sizeof(profile)) {
 		/* Skip mismatched per-profile versions: layout may differ. */
@@ -280,6 +287,7 @@ KASUMI_NOCFI bool kasumi_reload_ksu_allowlist(void)
 		kasumi_filp_close(fp, NULL);
 	else
 		fput(fp);
+	WRITE_ONCE(kasumi_allowlist_loaded, true);
 	mutex_unlock(&kasumi_config_mutex);
 	return true;
 
@@ -289,8 +297,7 @@ bad:
 		kasumi_filp_close(fp, NULL);
 	else
 		fput(fp);
-	xa_destroy(&kasumi_allow_uids_xa);
-	kasumi_allowlist_loaded = false;
+	kasumi_clear_allowlist_cache();
 	mutex_unlock(&kasumi_config_mutex);
 	return false;
 }

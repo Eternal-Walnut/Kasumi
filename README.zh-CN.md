@@ -105,8 +105,7 @@ ksud insmod kasumi_lkm.ko
 - `KSM_IOC_ADD_MAPS_RULE`、`KSM_IOC_CLEAR_MAPS_RULES`
 - `KSM_IOC_SET_MOUNT_HIDE`、`KSM_IOC_SET_MAPS_SPOOF`、`KSM_IOC_SET_STATFS_SPOOF`
 
-建议直接复用 [kasumi](https://github.com/Anatdx/kasumi) 用户态实现（C++），避免结构体或 ABI 版本不一致；
-另有 Anatdx 本人维护的 [YukiSU](https://github.com/Anatdx/YukiSU) 提供与 KernelSU 集成的实现（C++），
+Anatdx 本人维护的 [YukiSU](https://github.com/Anatdx/YukiSU) 提供与 KernelSU 集成的实现（C++），
 以及 Anatdx 参与开发的 [hybrid-mount](https://github.com/Hybrid-Mount/meta-hybrid_mount) 元模块也加入了 Kasumi 支持与用户态实现（Rust）。
 
 > 由于 kasumi 模块挂载逻辑并不优秀且更新频率缓慢，我推荐使用更优秀的 hybrid-mount 作为元模块使用

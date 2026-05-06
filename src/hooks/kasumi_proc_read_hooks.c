@@ -28,6 +28,7 @@
 #include <linux/spinlock.h>
 #include <linux/list.h>
 #include <linux/atomic.h>
+#include <linux/namei.h>
 #include <uapi/linux/magic.h>
 #ifndef EROFS_SUPER_MAGIC
 #define EROFS_SUPER_MAGIC 0xe0f5e1e2
@@ -1187,23 +1188,30 @@ struct kasumi_statfs_ri_data {
 	unsigned long spoof_f_type; /* real (lower) s_magic; 0 = do not spoof */
 };
 
+unsigned long kasumi_statfs_resolve_spoof_magic_dentry(struct dentry *dentry)
+{
+	struct inode *real_ino;
+
+	if (!dentry || !dentry->d_sb)
+		return 0;
+	if ((unsigned long)dentry->d_sb->s_magic != OVERLAYFS_SUPER_MAGIC)
+		return 0;
+	real_ino = kasumi_d_real_inode_impl(dentry);
+	if (real_ino && real_ino->i_sb != dentry->d_sb)
+		return (unsigned long)real_ino->i_sb->s_magic;
+	return (unsigned long)EROFS_SUPER_MAGIC;
+}
+
 unsigned long kasumi_statfs_resolve_spoof_magic(const char *path)
 {
 	struct path p;
-	struct inode *real_ino;
-	unsigned long spoof = 0;
+	unsigned long spoof;
 
 	if (!path || !kasumi_kern_path)
 		return 0;
-	if (kasumi_kern_path(path, 0, &p) != 0)
+	if (kasumi_kern_path(path, LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT, &p) != 0)
 		return 0;
-	if ((unsigned long)p.dentry->d_sb->s_magic == OVERLAYFS_SUPER_MAGIC) {
-		real_ino = kasumi_d_real_inode_impl(p.dentry);
-		if (real_ino && real_ino->i_sb != p.dentry->d_sb)
-			spoof = (unsigned long)real_ino->i_sb->s_magic;
-		else
-			spoof = (unsigned long)EROFS_SUPER_MAGIC;
-	}
+	spoof = kasumi_statfs_resolve_spoof_magic_dentry(p.dentry);
 	path_put(&p);
 	return spoof;
 }

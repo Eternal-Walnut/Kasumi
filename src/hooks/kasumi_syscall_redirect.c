@@ -21,6 +21,7 @@
 #include <linux/reboot.h>
 #include <linux/uaccess.h>
 #include <linux/fs.h>
+#include <linux/file.h>
 #include <linux/sched.h>
 #include <asm/syscall.h>
 #include <asm/unistd.h>
@@ -81,7 +82,13 @@ int  kasumi_syscall_dispatcher_nr = -1;
 static kasumi_syscall_hook_fn hooks[__NR_syscalls];
 static kasumi_syscall_hook_fn saved_ni;
 DEFINE_STATIC_SRCU(kasumi_redirect_srcu);
-kasumi_syscall_hook_fn orig_kernel_openat, orig_kernel_openat2, orig_kernel_statfs;
+kasumi_syscall_hook_fn orig_kernel_openat, orig_kernel_openat2, orig_kernel_statfs, orig_kernel_fstatfs;
+#ifdef __NR_statfs64
+kasumi_syscall_hook_fn orig_kernel_statfs64;
+#endif
+#ifdef __NR_fstatfs64
+kasumi_syscall_hook_fn orig_kernel_fstatfs64;
+#endif
 
 static int patch_entry(int nr, kasumi_syscall_hook_fn fn)
 {
@@ -411,6 +418,37 @@ static long h_statfs(const struct pt_regs *regs)
 	return ret;
 }
 
+/*
+ * fstatfs(fd, buf): same INCONSISTENT_MOUNT bypass as statfs, but we resolve
+ * the dentry through the open file rather than re-walking the pathname.  This
+ * matters because (a) bionic's fstatfs/fstatfs64 wrappers route here, not
+ * __NR_statfs, and (b) we avoid kern_path() altogether on a path the caller
+ * already opened, which is both faster and not subject to symlink/automount
+ * tricks the path-based hook had to compensate for via LOOKUP_FOLLOW.
+ */
+static long h_fstatfs(const struct pt_regs *regs)
+{
+	void __user *buf = (void __user *)(uintptr_t)regs->regs[1];
+	int fd = (int)regs->regs[0];
+	unsigned long s = 0;
+	struct file *file;
+	long ret;
+
+	if (!(kasumi_feature_enabled_mask & KSM_FEATURE_STATFS_SPOOF) ||
+	    !kasumi_should_apply_hide_rules())
+		return orig_kernel_fstatfs(regs);
+
+	file = fget(fd);
+	if (file) {
+		s = kasumi_statfs_resolve_spoof_magic_dentry(file->f_path.dentry);
+		fput(file);
+	}
+	ret = orig_kernel_fstatfs(regs);
+	if (ret >= 0 && s)
+		kasumi_statfs_apply_spoof(buf, s);
+	return ret;
+}
+
 /* ---- Init / exit ------------------------------------------------------- */
 
 int kasumi_syscall_redirect_init(void)
@@ -431,6 +469,16 @@ int kasumi_syscall_redirect_init(void)
 		kasumi_syscall_table)[__NR_openat2];
 	orig_kernel_statfs = ((kasumi_syscall_hook_fn *)
 		kasumi_syscall_table)[__NR_statfs];
+	orig_kernel_fstatfs = ((kasumi_syscall_hook_fn *)
+		kasumi_syscall_table)[__NR_fstatfs];
+#ifdef __NR_statfs64
+	orig_kernel_statfs64 = ((kasumi_syscall_hook_fn *)
+		kasumi_syscall_table)[__NR_statfs64];
+#endif
+#ifdef __NR_fstatfs64
+	orig_kernel_fstatfs64 = ((kasumi_syscall_hook_fn *)
+		kasumi_syscall_table)[__NR_fstatfs64];
+#endif
 	orig_kernel_reboot = ((kasumi_syscall_hook_fn *)
 		kasumi_syscall_table)[__NR_reboot];
 	orig_kernel_prctl = ((kasumi_syscall_hook_fn *)
@@ -463,17 +511,26 @@ int kasumi_syscall_redirect_init(void)
 		return ret;
 	}
 
-	kasumi_register_syscall_hook(__NR_openat,  h_openat);
-	kasumi_register_syscall_hook(__NR_openat2, h_openat2);
-	kasumi_register_syscall_hook(__NR_statfs,  h_statfs);
-	kasumi_register_syscall_hook(__NR_reboot,  h_reboot);
-	kasumi_register_syscall_hook(__NR_prctl,   h_prctl);
-#if defined(__aarch64__) || defined(__x86_64__)
-	kasumi_register_syscall_hook(__NR_read,    h_read);
+{
+	int n = 0;
+	kasumi_register_syscall_hook(__NR_openat,  h_openat);  n++;
+	kasumi_register_syscall_hook(__NR_openat2, h_openat2); n++;
+	kasumi_register_syscall_hook(__NR_statfs,  h_statfs);  n++;
+	kasumi_register_syscall_hook(__NR_fstatfs, h_fstatfs); n++;
+#ifdef __NR_statfs64
+	kasumi_register_syscall_hook(__NR_statfs64, h_statfs); n++;
 #endif
-
-	pr_info("Kasumi: redirect active @ slot %d, 6 hooks\n",
-		kasumi_syscall_dispatcher_nr);
+#ifdef __NR_fstatfs64
+	kasumi_register_syscall_hook(__NR_fstatfs64, h_fstatfs); n++;
+#endif
+	kasumi_register_syscall_hook(__NR_reboot,  h_reboot);  n++;
+	kasumi_register_syscall_hook(__NR_prctl,   h_prctl);   n++;
+#if defined(__aarch64__) || defined(__x86_64__)
+	kasumi_register_syscall_hook(__NR_read,    h_read);    n++;
+#endif
+	pr_info("Kasumi: redirect active @ slot %d, %d hooks\n",
+		kasumi_syscall_dispatcher_nr, n);
+}
 	return 0;
 }
 
@@ -574,6 +631,13 @@ void kasumi_syscall_redirect_exit(void)
 	orig_kernel_openat  = NULL;
 	orig_kernel_openat2 = NULL;
 	orig_kernel_statfs  = NULL;
+	orig_kernel_fstatfs = NULL;
+#ifdef __NR_statfs64
+	orig_kernel_statfs64 = NULL;
+#endif
+#ifdef __NR_fstatfs64
+	orig_kernel_fstatfs64 = NULL;
+#endif
 	orig_kernel_reboot  = NULL;
 	orig_kernel_prctl   = NULL;
 	orig_kernel_read    = NULL;

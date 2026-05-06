@@ -9,7 +9,6 @@
  */
 #include "kasumi_fake_mountinfo.h"
 #include "kasumi_entrypoints.h"
-#include "kasumi_root_detection.h"
 
 #include <linux/fs.h>
 #include <linux/file.h>
@@ -21,7 +20,6 @@
 #include <linux/spinlock.h>
 #include <linux/jiffies.h>
 #include <linux/sched.h>
-#include <linux/cred.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/atomic.h>
@@ -70,12 +68,6 @@ static atomic_t fake_mi_reader_pid = ATOMIC_INIT(0);
 static struct file *(*ptr_filp_open)(const char *, int, umode_t);
 static int (*ptr_filp_close)(struct file *, fl_owner_t);
 static ssize_t (*ptr_kernel_read)(struct file *, void *, size_t, loff_t *);
-static const struct cred *(*ptr_override_creds)(const struct cred *);
-static void (*ptr_revert_creds)(const struct cred *);
-static struct task_struct *(*ptr_find_task_by_vpid)(pid_t nr);
-static struct task_struct *fake_mi_init_task_ptr;
-static struct cred **fake_mi_ksu_cred_pp;
-static struct cred *fake_mi_kcred;
 
 bool kasumi_fake_mi_is_internal_read(void)
 {
@@ -334,9 +326,10 @@ static void map_add_if_missing(struct id_map_entry *map, int *nmap,
     (*nmap)++;
 }
 
-/* Build the new mountinfo buffer from raw /proc/self/mountinfo content for
- * the current hidden task. Two-pass: pass 1 builds old_id -> new_id map and
- * notes KSU lines to skip; pass 2 rewrites lines with new ids.
+/* Build the new mountinfo buffer from the current hidden task's real
+ * /proc/self/mountinfo view. If userspace namespace hiding has already removed
+ * module mounts, use that view as the base; then drop any remaining KSU-source
+ * lines as a conservative kernel-side fallback and compact mount ids.
  */
 static int build_fake_buffer(const char *raw, size_t raw_len,
                              char *out, size_t out_cap, size_t *out_len)
@@ -471,29 +464,9 @@ static int regenerate_cache_locked(void)
     loff_t pos = 0;
     ssize_t r;
     int ret = -EIO;
-    const struct cred *old_cred = NULL;
-    const struct cred *override_cred = NULL;
 
     if (!ptr_filp_open || !ptr_kernel_read || !ptr_filp_close)
         return -ENOSYS;
-
-    if (fake_mi_ksu_cred_pp)
-        override_cred = READ_ONCE(*fake_mi_ksu_cred_pp);
-    if (!override_cred && ptr_find_task_by_vpid) {
-        struct task_struct *init_tsk;
-        rcu_read_lock();
-        init_tsk = ptr_find_task_by_vpid(1);
-        if (init_tsk) {
-            const struct cred *init_cred = READ_ONCE(init_tsk->real_cred);
-            if (init_cred)
-                override_cred = init_cred;
-        }
-        rcu_read_unlock();
-    }
-    if (!override_cred)
-        override_cred = fake_mi_kcred;
-    if (override_cred && ptr_override_creds && ptr_revert_creds)
-        old_cred = ptr_override_creds(override_cred);
 
     atomic_set(&fake_mi_reader_pid, task_pid_nr(current));
     f = ptr_filp_open("/proc/self/mountinfo", O_RDONLY, 0);
@@ -502,8 +475,6 @@ static int regenerate_cache_locked(void)
         kasumi_log("fake_mi: filp_open(/proc/self/mountinfo) failed pid=%d comm=%s ret=%d\n",
                  task_pid_nr(current), current->comm, ret);
         atomic_set(&fake_mi_reader_pid, 0);
-        if (old_cred)
-            ptr_revert_creds(old_cred);
         return ret;
     }
 
@@ -556,8 +527,6 @@ out_free:
 out_close:
     ptr_filp_close(f, NULL);
     atomic_set(&fake_mi_reader_pid, 0);
-    if (old_cred)
-        ptr_revert_creds(old_cred);
     return ret;
 }
 
@@ -816,25 +785,13 @@ int kasumi_fake_mi_init(void)
     ptr_filp_open  = (void *)kasumi_lookup_name("filp_open");
     ptr_filp_close = (void *)kasumi_lookup_name("filp_close");
     ptr_kernel_read = (void *)kasumi_lookup_name("kernel_read");
-    ptr_override_creds = (void *)kasumi_lookup_name("override_creds");
-    ptr_revert_creds = (void *)kasumi_lookup_name("revert_creds");
-    ptr_find_task_by_vpid = (void *)kasumi_lookup_name("find_task_by_vpid");
-    fake_mi_init_task_ptr = (struct task_struct *)kasumi_lookup_name("init_task");
-    if ((kasumi_root_mask & KASUMI_ROOT_KSU) &&
-        kasumi_root_allows_spoofing())
-        fake_mi_ksu_cred_pp = (struct cred **)kasumi_lookup_name("ksu_cred");
 
     if (!ptr_filp_open || !ptr_filp_close || !ptr_kernel_read) {
         pr_warn("Kasumi fake_mi: symbol resolution failed (filp_open=%p filp_close=%p kernel_read=%p); feature disabled\n",
                 ptr_filp_open, ptr_filp_close, ptr_kernel_read);
         return -ENOSYS;
     }
-    if (ptr_override_creds && ptr_revert_creds && fake_mi_init_task_ptr)
-        fake_mi_kcred = prepare_kernel_cred(fake_mi_init_task_ptr);
-    pr_info("Kasumi fake_mi: initialized (ksu=%p init_vpid=%p kcred=%p)\n",
-            fake_mi_ksu_cred_pp ? READ_ONCE(*fake_mi_ksu_cred_pp) : NULL,
-            ptr_find_task_by_vpid,
-            fake_mi_kcred);
+    pr_info("Kasumi fake_mi: initialized (current-view mountinfo)\n");
     return 0;
 }
 

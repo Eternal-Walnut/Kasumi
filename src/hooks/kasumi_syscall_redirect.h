@@ -24,4 +24,11 @@ bool kasumi_has_syscall_hook(int nr);
 extern kasumi_syscall_hook_fn orig_kernel_openat;
 extern kasumi_syscall_hook_fn orig_kernel_openat2;
 extern kasumi_syscall_hook_fn orig_kernel_statfs;
+extern kasumi_syscall_hook_fn orig_kernel_fstatfs;
+#ifdef __NR_statfs64
+extern kasumi_syscall_hook_fn orig_kernel_statfs64;
+#endif
+#ifdef __NR_fstatfs64
+extern kasumi_syscall_hook_fn orig_kernel_fstatfs64;
+#endif
 #endif

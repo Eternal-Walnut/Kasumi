@@ -8,6 +8,7 @@
  * Author: Anatdx
  */
 #include <linux/err.h>
+#include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
@@ -91,6 +92,25 @@ int (*kasumi_ap_list_kstorage_ids)(int gid, long *ids, int idslen,
 static long (*kasumi_copy_from_kernel_nofault_fn)(void *dst, const void *src,
 						  size_t size);
 static bool kasumi_copy_from_kernel_nofault_tried;
+
+static struct file *kasumi_open_ro(const char *path)
+{
+	if (!kasumi_filp_open)
+		kasumi_filp_open = (void *)kasumi_lookup_name_quiet("filp_open");
+	if (!kasumi_filp_open)
+		return ERR_PTR(-ENOENT);
+	return kasumi_filp_open(path, O_RDONLY, 0);
+}
+
+static void kasumi_close_file(struct file *file)
+{
+	if (!kasumi_filp_close)
+		kasumi_filp_close = (void *)kasumi_lookup_name_quiet("filp_close");
+	if (kasumi_filp_close)
+		kasumi_filp_close(file, NULL);
+	else
+		fput(file);
+}
 
 static void kasumi_ap_clear_symbols(void)
 {
@@ -400,10 +420,10 @@ static bool kasumi_path_exists(const char *path)
 
 	if (!path)
 		return false;
-	f = filp_open(path, O_RDONLY, 0);
+	f = kasumi_open_ro(path);
 	if (IS_ERR(f))
 		return false;
-	filp_close(f, NULL);
+	kasumi_close_file(f);
 	return true;
 }
 
@@ -482,11 +502,11 @@ static bool kasumi_magisk_detect(void)
 	int i;
 
 	for (i = 0; magisk_paths[i]; i++) {
-		struct file *f = filp_open(magisk_paths[i], O_RDONLY, 0);
+		struct file *f = kasumi_open_ro(magisk_paths[i]);
 
 		if (IS_ERR(f))
 			continue;
-		filp_close(f, NULL);
+		kasumi_close_file(f);
 		kasumi_root_mask |= KASUMI_ROOT_MAGISK;
 		pr_info("Kasumi: Magisk detected at %s\n", magisk_paths[i]);
 		return true;

@@ -171,7 +171,7 @@ int kasumi_dop_uninstall_path(const char *path)
 			call_rcu(&m->rcu, kasumi_dop_meta_free_rcu);
 		}
 	}
-	path_put(&p);
+	kasumi_path_put(&p);
 	return 0;
 }
 

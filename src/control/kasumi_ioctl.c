@@ -335,7 +335,7 @@ static int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 					auto_ino = (unsigned long)inode->i_ino;
 					(void)kasumi_iop_mark_spoof(inode);
 				}
-				path_put(&resolved);
+				kasumi_path_put(&resolved);
 			}
 			if (auto_ino)
 				k->target_ino = auto_ino;
@@ -344,7 +344,7 @@ static int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 			if (kasumi_kern_path(k->target_pathname, LOOKUP_FOLLOW, &resolved) == 0) {
 				if (resolved.dentry && d_inode(resolved.dentry))
 					(void)kasumi_iop_mark_spoof(d_inode(resolved.dentry));
-				path_put(&resolved);
+				kasumi_path_put(&resolved);
 			}
 		}
 
@@ -790,11 +790,11 @@ static int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 						resolved_src = kstrdup(res, GFP_KERNEL);
 					kfree(rbuf);
 				}
-				path_put(&mpath);
+				kasumi_path_put(&mpath);
 			}
 			if (kasumi_kern_path(target, LOOKUP_FOLLOW, &mpath) == 0) {
 				tgt_dentry = dget(mpath.dentry);
-				path_put(&mpath);
+				kasumi_path_put(&mpath);
 			}
 
 			hash = full_name_hash(NULL, src, strlen(src));
@@ -896,7 +896,7 @@ static int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 				parent_inode = d_inode(path.dentry->d_parent);
 				kasumi_ihold(parent_inode);
 			}
-			path_put(&path);
+			kasumi_path_put(&path);
 		} else {
 			char *ls = strrchr(src, '/');
 			if (ls && ls != src) {
@@ -917,7 +917,7 @@ static int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 							}
 							parent_dir = kstrdup(res, GFP_KERNEL);
 						}
-						path_put(&path);
+						kasumi_path_put(&path);
 					}
 					kfree(p_str);
 				}
@@ -995,7 +995,7 @@ static int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 				(void)kasumi_dop_install(path.dentry, src);
 				(void)kasumi_xattr_sid_install(target_inode, src);
 			}
-			path_put(&path);
+			kasumi_path_put(&path);
 		}
 		if (target_inode) {
 			(void)kasumi_iop_mark_spoof(target_inode);
@@ -1040,7 +1040,7 @@ static int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 				parent_inode = d_inode(path.dentry->d_parent);
 				kasumi_ihold(parent_inode);
 			}
-			path_put(&path);
+			kasumi_path_put(&path);
 		}
 		kfree(tmp_buf);
 
@@ -1126,7 +1126,7 @@ static int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 			}
 			kasumi_enabled = true;
 			mutex_unlock(&kasumi_config_mutex);
-			path_put(&path);
+			kasumi_path_put(&path);
 		} else {
 			ret = -ENOENT;
 		}
@@ -1164,7 +1164,7 @@ static int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 					kasumi_ihold(del_parent_inode);
 				}
 				kfree(rbuf);
-				path_put(&dpath);
+				kasumi_path_put(&dpath);
 			}
 		}
 

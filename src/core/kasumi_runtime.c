@@ -131,6 +131,8 @@ char *(*kasumi_dentry_path_raw)(const struct dentry *, char *, int);
 char *(*kasumi_d_path)(const struct path *, char *, int);
 struct dentry *(*kasumi_d_hash_and_lookup)(struct dentry *, const struct qstr *);
 void *kasumi_vfs_getxattr_addr;
+void (*kasumi_path_put_ptr)(const struct path *);
+void (*kasumi_free_inode_nonrcu_ptr)(struct inode *);
 struct file *(*kasumi_filp_open)(const char *, int, umode_t);
 int (*kasumi_filp_close)(struct file *, fl_owner_t);
 ssize_t (*kasumi_kernel_read)(struct file *, void *, size_t, loff_t *);
@@ -344,7 +346,7 @@ void kasumi_mark_dir_has_inject(const char *path_str)
 		set_bit(AS_FLAGS_KASUMI_DIR_HAS_INJECT, &inode->i_mapping->flags);
 		(void)kasumi_fop_install(inode);
 	}
-	path_put(&p);
+	kasumi_path_put(&p);
 }
 
 void kasumi_clear_inode_flags_for_path(const char *path_str, unsigned int bit)
@@ -357,7 +359,7 @@ void kasumi_clear_inode_flags_for_path(const char *path_str, unsigned int bit)
 		return;
 	if (p.dentry && d_inode(p.dentry) && d_inode(p.dentry)->i_mapping)
 		clear_bit(bit, &d_inode(p.dentry)->i_mapping->flags);
-	path_put(&p);
+	kasumi_path_put(&p);
 }
 
 void kasumi_cleanup_locked(void)

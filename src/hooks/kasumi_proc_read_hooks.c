@@ -407,7 +407,12 @@ int kasumi_mount_proxy_install_fd(int fd)
 		ret = -ENOMEM;
 		goto out;
 	}
-	path = d_path(&file->f_path, path_buf, PAGE_SIZE);
+	if (!kasumi_d_path) {
+		free_page((unsigned long)path_buf);
+		ret = -ENOENT;
+		goto out;
+	}
+	path = kasumi_d_path(&file->f_path, path_buf, PAGE_SIZE);
 	if (IS_ERR(path)) {
 		free_page((unsigned long)path_buf);
 		goto out;
@@ -839,7 +844,12 @@ static int kasumi_read_mount_filter_ret(struct kretprobe_instance *ri, struct pt
 		return 0;
 	}
 	path_buf[0] = '\0';
-	path = d_path(&f->f_path, path_buf, PAGE_SIZE);
+	if (!kasumi_d_path) {
+		free_page((unsigned long)path_buf);
+		fput(f);
+		return 0;
+	}
+	path = kasumi_d_path(&f->f_path, path_buf, PAGE_SIZE);
 	if (IS_ERR(path)) {
 		free_page((unsigned long)path_buf);
 		fput(f);
@@ -971,7 +981,11 @@ static int kasumi_vfs_read_mount_filter_ret(struct kretprobe_instance *ri,
 	if (!path_buf)
 		return 0;
 	path_buf[0] = '\0';
-	path = d_path(&d->file->f_path, path_buf, PAGE_SIZE);
+	if (!kasumi_d_path) {
+		free_page((unsigned long)path_buf);
+		return 0;
+	}
+	path = kasumi_d_path(&d->file->f_path, path_buf, PAGE_SIZE);
 	if (IS_ERR(path)) {
 		free_page((unsigned long)path_buf);
 		return 0;
@@ -1212,7 +1226,7 @@ unsigned long kasumi_statfs_resolve_spoof_magic(const char *path)
 	if (kasumi_kern_path(path, LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT, &p) != 0)
 		return 0;
 	spoof = kasumi_statfs_resolve_spoof_magic_dentry(p.dentry);
-	path_put(&p);
+	kasumi_path_put(&p);
 	return spoof;
 }
 

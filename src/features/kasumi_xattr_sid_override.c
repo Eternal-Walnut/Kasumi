@@ -128,7 +128,7 @@ static int kasumi_source_sid_from_path(const char *source_path, u32 *sid)
 			if (p.dentry && d_inode(p.dentry) &&
 			    kasumi_selinux_read_sid(d_inode(p.dentry), sid))
 				ret = 0;
-			path_put(&p);
+			kasumi_path_put(&p);
 			if (!ret)
 				break;
 		}
@@ -238,7 +238,7 @@ int kasumi_xattr_sid_uninstall_path(const char *path)
 	if (ret)
 		return ret;
 	if (!p.dentry || !d_inode(p.dentry)) {
-		path_put(&p);
+		kasumi_path_put(&p);
 		return -ENOENT;
 	}
 
@@ -251,7 +251,7 @@ int kasumi_xattr_sid_uninstall_path(const char *path)
 		iput(m->inode);
 		call_rcu(&m->rcu, kasumi_xattr_sid_meta_free_rcu);
 	}
-	path_put(&p);
+	kasumi_path_put(&p);
 	return 0;
 }
 

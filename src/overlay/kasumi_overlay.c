@@ -120,11 +120,11 @@ static KASUMI_NOCFI KASUMI_FILLDIR_RET_TYPE kasumi_merge_filldir(struct dir_cont
 				struct kstat stat;
 				if (kasumi_vfs_getattr(&p, &stat, STATX_TYPE, AT_STATX_SYNC_AS_STAT) == 0 &&
 				    S_ISCHR(stat.mode) && stat.rdev == 0) {
-					path_put(&p);
+					kasumi_path_put(&p);
 					kfree(path);
 					return KASUMI_FILLDIR_CONTINUE;
 				}
-				path_put(&p);
+				kasumi_path_put(&p);
 			}
 			kfree(path);
 		}
@@ -202,7 +202,7 @@ void kasumi_populate_injected_list(const char *dir_path, struct dentry *parent,
 						dpath_hash = full_name_hash(NULL, p, dpath_dir_len);
 					}
 				}
-				path_put(&resolved);
+				kasumi_path_put(&resolved);
 			}
 		}
 	}
@@ -300,7 +300,7 @@ next_entry:
 				struct path rp;
 				if (kasumi_kern_path(replace_path, LOOKUP_FOLLOW, &rp) == 0) {
 					kasumi_log("replace mode enabled for %s (found %s)\n", dir_path, replace_path);
-					path_put(&rp);
+					kasumi_path_put(&rp);
 				}
 				kfree(replace_path);
 			}
@@ -322,7 +322,7 @@ next_entry:
 					fput(f);
 				}
 				put_cred(cred);
-				path_put(&path);
+				kasumi_path_put(&path);
 			}
 			}
 		}
@@ -388,7 +388,7 @@ static void kasumi_add_path_entry(const char *src, const char *tgt,
 							(void)kasumi_dop_install(p.dentry, src);
 							(void)kasumi_xattr_sid_install(d_inode(p.dentry), src);
 						}
-						path_put(&p);
+						kasumi_path_put(&p);
 					}
 				}
 			} else {
@@ -436,11 +436,11 @@ static bool kasumi_register_nested_merge(const char *src_str,
 				resolved_src = kstrdup(res, GFP_KERNEL);
 		}
 		kfree(rbuf);
-		path_put(&mpath);
+		kasumi_path_put(&mpath);
 	}
 	if (kasumi_kern_path(target_str, LOOKUP_FOLLOW, &mpath) == 0) {
 		tgt_dentry = dget(mpath.dentry);
-		path_put(&mpath);
+		kasumi_path_put(&mpath);
 	}
 
 	hash = full_name_hash(NULL, src_str, strlen(src_str));
@@ -570,7 +570,7 @@ KASUMI_NOCFI void kasumi_materialize_merge(const char *src_prefix,
 
 	f = kasumi_dentry_open(&path, O_RDONLY | O_DIRECTORY, current_cred());
 	if (IS_ERR(f)) {
-		path_put(&path);
+		kasumi_path_put(&path);
 		return;
 	}
 
@@ -583,5 +583,5 @@ KASUMI_NOCFI void kasumi_materialize_merge(const char *src_prefix,
 	iterate_dir(f, &mctx.ctx);
 
 	fput(f);
-	path_put(&path);
+	kasumi_path_put(&path);
 }

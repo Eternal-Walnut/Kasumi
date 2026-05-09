@@ -1043,7 +1043,7 @@ KASUMI_NOCFI int kasumi_krp_vfs_getxattr_entry(struct kretprobe_instance *ri,
 			/* Try logical path (LOOKUP_FOLLOW resolves symlinks) */
 			if (kasumi_kern_path(try_path, LOOKUP_FOLLOW, &src_path) == 0) {
 				ret = kasumi_get_selinux_ctx_from_path(&src_path, d->src_ctx, KASUMI_SELINUX_CTX_MAX);
-				path_put(&src_path);
+				kasumi_path_put(&src_path);
 				if (ret > 0 && (size_t)ret < KASUMI_SELINUX_CTX_MAX) {
 					d->src_ctx_len = (size_t)ret;
 					d->src_ctx[d->src_ctx_len] = '\0';
@@ -1078,7 +1078,7 @@ KASUMI_NOCFI int kasumi_krp_vfs_getxattr_entry(struct kretprobe_instance *ri,
 						struct path alt_path;
 						if (kasumi_kern_path(alt, LOOKUP_FOLLOW, &alt_path) == 0) {
 							ret = kasumi_get_selinux_ctx_from_path(&alt_path, d->src_ctx, KASUMI_SELINUX_CTX_MAX);
-							path_put(&alt_path);
+							kasumi_path_put(&alt_path);
 							if (ret > 0 && (size_t)ret < KASUMI_SELINUX_CTX_MAX)
 								got_ctx = true;
 						}
@@ -1089,7 +1089,7 @@ KASUMI_NOCFI int kasumi_krp_vfs_getxattr_entry(struct kretprobe_instance *ri,
 					if (ret > 0 && (size_t)ret < KASUMI_SELINUX_CTX_MAX)
 						got_ctx = true;
 				}
-				path_put(&src_path);
+				kasumi_path_put(&src_path);
 				if (got_ctx) {
 					d->src_ctx_len = (size_t)ret;
 					d->src_ctx[d->src_ctx_len] = '\0';

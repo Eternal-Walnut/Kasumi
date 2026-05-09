@@ -84,14 +84,14 @@ static void kasumi_resolve_system_dev(void)
 		pr_warn("Kasumi: /system resolved to incomplete path (mnt=%p dentry=%p sb=%p), stat spoofing dev disabled\n",
 			mnt, dentry, sb);
 		if (dentry && mnt)
-			path_put(&sys_path);
+			kasumi_path_put(&sys_path);
 		return;
 	}
 
 	kasumi_system_dev = sb->s_dev;
 	pr_info("Kasumi: /system dev=%u:%u\n",
 		MAJOR(kasumi_system_dev), MINOR(kasumi_system_dev));
-	path_put(&sys_path);
+	kasumi_path_put(&sys_path);
 }
 
 static int kasumi_resolve_runtime_symbols(void)
@@ -130,10 +130,18 @@ static int kasumi_resolve_runtime_symbols(void)
 		pr_warn("Kasumi: strncpy_from_user_nofault not found, falling back to copy_from_user\n");
 	kasumi_d_path = (void *)kasumi_lookup_name("d_path");
 	kasumi_d_hash_and_lookup = (void *)kasumi_lookup_name("d_hash_and_lookup");
+	kasumi_path_put_ptr = (void *)kasumi_lookup_name("path_put");
+	kasumi_free_inode_nonrcu_ptr = (void *)kasumi_lookup_name("free_inode_nonrcu");
 	if (!kasumi_d_path)
 		pr_warn("Kasumi: d_path not found, path resolution in populate/merge/hide may fail\n");
 	if (!kasumi_d_hash_and_lookup)
 		pr_warn("Kasumi: d_hash_and_lookup not found, merge dedup and hide filter disabled\n");
+	if (!kasumi_path_put_ptr) {
+		pr_err("Kasumi: FATAL - path_put not found\n");
+		return -ENOENT;
+	}
+	if (!kasumi_free_inode_nonrcu_ptr)
+		pr_warn("Kasumi: free_inode_nonrcu not found, sop fallback disabled\n");
 	if (!kasumi_filp_open || !kasumi_kernel_read)
 		pr_warn("Kasumi: filp_open/kernel_read not found, allowlist disabled\n");
 

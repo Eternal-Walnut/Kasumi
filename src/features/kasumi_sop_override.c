@@ -91,8 +91,13 @@ int kasumi_sop_install(struct super_block *sb)
 	m->orig_sop = orig;
 	memcpy(&m->shadow_sop, orig, sizeof(struct super_operations));
 	m->shadow_sop.destroy_inode = kasumi_shadow_destroy_inode;
-	if (!orig->destroy_inode && !orig->free_inode)
-		m->shadow_sop.free_inode = free_inode_nonrcu;
+	if (!orig->destroy_inode && !orig->free_inode) {
+		if (!kasumi_free_inode_nonrcu_ptr) {
+			kfree(m);
+			return -EOPNOTSUPP;
+		}
+		m->shadow_sop.free_inode = kasumi_free_inode_nonrcu_ptr;
+	}
 
 	spin_lock(&kasumi_sop_lock);
 	existing = kasumi_sop_lookup_rcu(sb);

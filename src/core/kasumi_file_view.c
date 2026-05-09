@@ -122,7 +122,7 @@ static void kasumi_file_view_fill_source_stat(struct kasumi_file_view *view,
 
 out:
 	if (src.dentry && src.mnt)
-		path_put(&src);
+		kasumi_path_put(&src);
 }
 
 static int kasumi_file_view_release(struct inode *inode, struct file *file)

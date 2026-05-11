@@ -652,7 +652,8 @@ static int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 			n = scnprintf(kbuf + written, buf_size - written,
 				     "vfs: getattr=iop readdir=fop d_path=none getxattr=none\n");
 		written += n;
-		n = scnprintf(kbuf + written, buf_size - written, "selinuxfs/access,context: %s\n",
+		n = scnprintf(kbuf + written, buf_size - written,
+			      "selinuxfs/access,context,proc_attr_current: %s\n",
 			      kasumi_fake_selinuxfs_access_active() ? "shadow fop" : "none");
 		written += n;
 

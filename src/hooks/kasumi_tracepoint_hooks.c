@@ -41,6 +41,7 @@ static inline bool kasumi_syscall_id_relevant(long id)
 	       id == __NR_statx ||
 #endif
 	       id == __NR_reboot || id == __NR_prctl || id == __NR_read ||
+	       id == __NR_write ||
 	       id == (long)kasumi_syscall_nr_param;
 }
 

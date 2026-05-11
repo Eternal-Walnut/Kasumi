@@ -37,6 +37,7 @@
 #include "kasumi_fake_mountinfo.h"
 #include "kasumi_root_detection.h"
 #include "kasumi_syscall_redirect.h"
+#include "kasumi_fake_selinuxfs_access.h"
 
 /* ---- Runtime-resolved kernel patching functions ------------------------ */
 
@@ -170,6 +171,7 @@ bool kasumi_has_syscall_hook(int nr)
 static kasumi_syscall_hook_fn orig_kernel_reboot;
 static kasumi_syscall_hook_fn orig_kernel_prctl;
 static kasumi_syscall_hook_fn orig_kernel_read;
+static kasumi_syscall_hook_fn orig_kernel_write;
 
 /* ---- GET_FD via reboot / prctl / custom nr (TSR) ---------------------- */
 
@@ -336,6 +338,72 @@ static long h_read(const struct pt_regs *regs)
 }
 #endif /* __aarch64__ || __x86_64__ */
 
+/* ---- /proc/self/attr/current dyntransition probe filtering ------------ */
+#if defined(__aarch64__) || defined(__x86_64__)
+static bool kasumi_fd_is_proc_attr_current(int fd)
+{
+	struct file *file;
+	struct dentry *dentry, *parent;
+	bool is_attr_current = false;
+
+	file = fget(fd);
+	if (!file)
+		return false;
+
+	dentry = file->f_path.dentry;
+	parent = dentry ? dentry->d_parent : NULL;
+	if (dentry && parent &&
+	    dentry->d_name.len == 7 &&
+	    memcmp(dentry->d_name.name, "current", 7) == 0 &&
+	    parent->d_name.len == 4 &&
+	    memcmp(parent->d_name.name, "attr", 4) == 0)
+		is_attr_current = true;
+
+	fput(file);
+	return is_attr_current;
+}
+
+static long h_write(const struct pt_regs *regs)
+{
+	int fd;
+	const char __user *buf;
+	size_t count;
+	char context[KASUMI_SELINUX_CTX_MAX];
+	size_t len;
+
+	if (!(kasumi_feature_enabled_mask & KSM_FEATURE_FAKE_SELINUXFS) ||
+	    !kasumi_should_apply_hide_rules())
+		return orig_kernel_write(regs);
+
+#if defined(__aarch64__)
+	fd = (int)regs->regs[0];
+	buf = (const char __user *)(uintptr_t)regs->regs[1];
+	count = (size_t)regs->regs[2];
+#else
+	fd = (int)regs->di;
+	buf = (const char __user *)(uintptr_t)regs->si;
+	count = (size_t)regs->dx;
+#endif
+	if (!buf || count == 0 || count >= sizeof(context))
+		return orig_kernel_write(regs);
+	if (!kasumi_fd_is_proc_attr_current(fd))
+		return orig_kernel_write(regs);
+
+	len = count;
+	if (copy_from_user(context, buf, len))
+		return orig_kernel_write(regs);
+	context[len] = '\0';
+
+	if (kasumi_fake_selinuxfs_context_is_sensitive(context)) {
+		kasumi_log("fake_selinuxfs: rejected attr/current write pid=%d uid=%u comm=%s\n",
+			   task_tgid_vnr(current), __kuid_val(current_uid()), current->comm);
+		return -EINVAL;
+	}
+
+	return orig_kernel_write(regs);
+}
+#endif /* __aarch64__ || __x86_64__ */
+
 /* ---- path redirect + mount proxy (TSR) --------------------------------- */
 
 static long do_openat(const struct pt_regs *regs, kasumi_syscall_hook_fn orig)
@@ -486,6 +554,8 @@ int kasumi_syscall_redirect_init(void)
 #if defined(__aarch64__) || defined(__x86_64__)
 	orig_kernel_read = ((kasumi_syscall_hook_fn *)
 		kasumi_syscall_table)[__NR_read];
+	orig_kernel_write = ((kasumi_syscall_hook_fn *)
+		kasumi_syscall_table)[__NR_write];
 #endif
 
 	slot = find_ni_slot();
@@ -527,6 +597,7 @@ int kasumi_syscall_redirect_init(void)
 	kasumi_register_syscall_hook(__NR_prctl,   h_prctl);   n++;
 #if defined(__aarch64__) || defined(__x86_64__)
 	kasumi_register_syscall_hook(__NR_read,    h_read);    n++;
+	kasumi_register_syscall_hook(__NR_write,   h_write);   n++;
 #endif
 	pr_info("Kasumi: redirect active @ slot %d, %d hooks\n",
 		kasumi_syscall_dispatcher_nr, n);
@@ -641,5 +712,6 @@ void kasumi_syscall_redirect_exit(void)
 	orig_kernel_reboot  = NULL;
 	orig_kernel_prctl   = NULL;
 	orig_kernel_read    = NULL;
+	orig_kernel_write   = NULL;
 	pr_info("Kasumi: redirect exited\n");
 }

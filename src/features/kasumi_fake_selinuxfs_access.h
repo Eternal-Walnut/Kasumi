@@ -15,5 +15,6 @@
 int kasumi_fake_selinuxfs_access_init(void);
 void kasumi_fake_selinuxfs_access_exit(void);
 bool kasumi_fake_selinuxfs_access_active(void);
+bool kasumi_fake_selinuxfs_context_is_sensitive(const char *context);
 
 #endif /* _KASUMI_FAKE_SELINUXFS_ACCESS_H */

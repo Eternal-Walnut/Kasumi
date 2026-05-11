@@ -66,8 +66,8 @@ static bool kasumi_selinuxfs_marker_match(const char *ctx)
 {
 	static const char * const markers[] = {
 		":magisk:",
-		":su:",
 		":ksu:",
+		":su:",
 		"magisk_file",
 		"magisk_log_file",
 		"ksu_file",
@@ -127,7 +127,12 @@ static bool kasumi_selinuxfs_sensitive_context(char *context)
 		return false;
 
 	ctx = strim(context);
-	return kasumi_selinuxfs_marker_match(ctx);
+	return kasumi_fake_selinuxfs_context_is_sensitive(ctx);
+}
+
+bool kasumi_fake_selinuxfs_context_is_sensitive(const char *context)
+{
+	return kasumi_selinuxfs_marker_match(context);
 }
 
 static bool kasumi_selinuxfs_query_is_probe(char *query)

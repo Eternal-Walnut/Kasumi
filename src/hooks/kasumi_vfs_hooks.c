@@ -466,7 +466,7 @@ out:
 #endif
 }
 
-void kasumi_handle_sys_enter_statx(struct pt_regs *regs, long id)
+KASUMI_NOCFI void kasumi_handle_sys_enter_statx(struct pt_regs *regs, long id)
 {
 #if defined(__aarch64__) || defined(__x86_64__)
 	struct kasumi_percpu *pcpu = kasumi_this_cpu();
@@ -516,7 +516,7 @@ void kasumi_handle_sys_enter_statx(struct pt_regs *regs, long id)
 #endif
 }
 
-void kasumi_handle_sys_exit_statx(struct pt_regs *regs, long ret)
+KASUMI_NOCFI void kasumi_handle_sys_exit_statx(struct pt_regs *regs, long ret)
 {
 #if defined(__aarch64__) || defined(__x86_64__)
 	struct kasumi_percpu *pcpu = kasumi_this_cpu();
@@ -568,7 +568,7 @@ void kasumi_handle_sys_exit_path(struct pt_regs *regs, long ret)
 	(void)kasumi_mount_proxy_install_fd((int)ret);
 }
 
-void kasumi_handle_sys_enter_path(struct pt_regs *regs, long id)
+KASUMI_NOCFI void kasumi_handle_sys_enter_path(struct pt_regs *regs, long id)
 {
 	const char __user *filename_user;
 	char *buf;

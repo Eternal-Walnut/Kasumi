@@ -339,6 +339,71 @@ static long h_read(const struct pt_regs *regs)
 
 /* ---- path redirect + mount proxy (TSR) --------------------------------- */
 
+static KASUMI_NOCFI long kasumi_copy_user_path_at(int dirfd, const char __user *u,
+				     char *path, size_t size)
+{
+	char *page;
+	char *dir;
+	struct file *file;
+	struct path pwd;
+	long len;
+	int written;
+
+	if (!u || !path || size == 0)
+		return -EINVAL;
+	len = strncpy_from_user(path, u, size);
+	if (len <= 0 || len >= size)
+		return len;
+	path[size - 1] = '\0';
+	if (path[0] == '/' || !kasumi_d_path)
+		return len;
+
+	page = (char *)__get_free_page(GFP_KERNEL);
+	if (!page)
+		return len;
+	if (dirfd == AT_FDCWD) {
+		if (!current->fs || !kasumi_path_get_ptr)
+			goto out_free;
+		spin_lock(&current->fs->lock);
+		pwd = current->fs->pwd;
+		kasumi_path_get(&pwd);
+		spin_unlock(&current->fs->lock);
+		dir = kasumi_d_path(&pwd, page, PAGE_SIZE);
+		if (!IS_ERR_OR_NULL(dir) && dir[0] == '/') {
+			char rel[KSM_MAX_LEN_PATHNAME];
+
+			strscpy(rel, path, sizeof(rel));
+			if (strcmp(dir, "/") == 0)
+				written = scnprintf(path, size, "/%s", rel);
+			else
+				written = scnprintf(path, size, "%s/%s", dir, rel);
+			if (written > 0 && written < size)
+				len = written;
+		}
+		kasumi_path_put(&pwd);
+		goto out_free;
+	}
+	file = fget(dirfd);
+	if (!file)
+		goto out_free;
+	dir = kasumi_d_path(&file->f_path, page, PAGE_SIZE);
+	if (!IS_ERR_OR_NULL(dir) && dir[0] == '/') {
+		char rel[KSM_MAX_LEN_PATHNAME];
+
+		strscpy(rel, path, sizeof(rel));
+		if (strcmp(dir, "/") == 0)
+			written = scnprintf(path, size, "/%s", rel);
+		else
+			written = scnprintf(path, size, "%s/%s", dir, rel);
+		if (written > 0 && written < size)
+			len = written;
+	}
+	fput(file);
+out_free:
+	free_page((unsigned long)page);
+	return len;
+}
+
 static long do_openat(const struct pt_regs *regs, kasumi_syscall_hook_fn orig)
 {
 	char path[KSM_MAX_LEN_PATHNAME];
@@ -352,9 +417,8 @@ static long do_openat(const struct pt_regs *regs, kasumi_syscall_hook_fn orig)
 	if (atomic_long_read(&kasumi_ioctl_tgid) == tgid ||
 	    atomic_long_read(&kasumi_xattr_source_tgid) == tgid)
 		return orig(regs);
-	if (!u || copy_from_user(path, u, sizeof(path) - 1))
+	if (kasumi_copy_user_path_at(dirfd, u, path, sizeof(path)) <= 0)
 		return orig(regs);
-	path[sizeof(path) - 1] = '\0';
 
 	if (path[0] == '/' && kasumi_path_needs_proc_proxy(path)) {
 		raw_proc_proxy = true;
@@ -407,10 +471,20 @@ static long h_statfs(const struct pt_regs *regs)
 	if (!(kasumi_feature_enabled_mask & KSM_FEATURE_STATFS_SPOOF) ||
 	    !kasumi_should_apply_hide_rules())
 		return orig_kernel_statfs(regs);
-	if (copy_from_user(path, (void __user *)(uintptr_t)regs->regs[0],
-			  sizeof(path) - 1))
-		return orig_kernel_statfs(regs);
-	path[sizeof(path) - 1] = 0;
+
+       
+#if defined(__aarch64__)
+	u = (const char __user *)(uintptr_t)regs->regs[0];
+	buf = (void __user *)(uintptr_t)regs->regs[1];
+#else
+	u = (const char __user *)(uintptr_t)regs->di;
+	buf = (void __user *)(uintptr_t)regs->si;
+#endif
+	if (kasumi_copy_user_path_at(AT_FDCWD, u, path, sizeof(path)) <= 0)
+		return orig(regs);
+    
+	if (path[0] == '/' && kasumi_should_hide(path))
+		return -ENOENT;
 
 	s = kasumi_statfs_resolve_spoof_magic(path);
 	ret = orig_kernel_statfs(regs);
@@ -555,7 +629,7 @@ static void kasumi_redirect_drain_done(struct rcu_head *head)
 	complete(s->done);
 }
 
-void kasumi_syscall_redirect_exit(void)
+KASUMI_NOCFI void kasumi_syscall_redirect_exit(void)
 {
 	DECLARE_COMPLETION_ONSTACK(drain_done);
 	static struct kasumi_drain_state drain;

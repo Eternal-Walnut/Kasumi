@@ -620,6 +620,9 @@ int kasumi_fake_mi_prepare(bool force)
      * atomic context is not recoverable here; leave the real kernel output
      * untouched and let a later process-context read refresh the cache.
      */
+    if (kasumi_fake_mi_is_internal_read())
+        return 0;
+
     if (in_atomic() || irqs_disabled())
         return -EWOULDBLOCK;
 

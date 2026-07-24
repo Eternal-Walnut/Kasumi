@@ -337,32 +337,6 @@ static long h_read(const struct pt_regs *regs)
 }
 #endif /* __aarch64__ || __x86_64__ */
 
-/* ---- /proc/self/attr/current dyntransition probe filtering ------------ */
-#if defined(__aarch64__) || defined(__x86_64__)
-static bool kasumi_fd_is_proc_attr_current(int fd)
-{
-	struct file *file;
-	struct dentry *dentry, *parent;
-	bool is_attr_current = false;
-
-	file = fget(fd);
-	if (!file)
-		return false;
-
-	dentry = file->f_path.dentry;
-	parent = dentry ? dentry->d_parent : NULL;
-	if (dentry && parent &&
-	    dentry->d_name.len == 7 &&
-	    memcmp(dentry->d_name.name, "current", 7) == 0 &&
-	    parent->d_name.len == 4 &&
-	    memcmp(parent->d_name.name, "attr", 4) == 0)
-		is_attr_current = true;
-
-	fput(file);
-	return is_attr_current;
-}
-#endif /* __aarch64__ || __x86_64__ */
-
 /* ---- path redirect + mount proxy (TSR) --------------------------------- */
 
 static long do_openat(const struct pt_regs *regs, kasumi_syscall_hook_fn orig)

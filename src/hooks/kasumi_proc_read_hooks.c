@@ -817,6 +817,9 @@ static int kasumi_read_mount_filter_ret(struct kretprobe_instance *ri, struct pt
 	bool should_hide = false;
 	bool fake_served = false;
 
+	/* This fallback allocates, takes mutexes and accesses user pages. */
+	if (in_atomic() || irqs_disabled())
+		return 0;
 	/* Fast path: skip when both mount_hide and maps_spoof are disabled */
 	if (!(kasumi_feature_enabled_mask & (KSM_FEATURE_MOUNT_HIDE | KSM_FEATURE_MAPS_SPOOF)))
 		return 0;
@@ -962,6 +965,8 @@ static int kasumi_vfs_read_mount_filter_ret(struct kretprobe_instance *ri,
 	bool should_hide = false;
 	bool fake_served = false;
 
+	if (in_atomic() || irqs_disabled())
+		return 0;
 	/* Fast path: skip when both mount_hide and maps_spoof are disabled */
 	if (!(kasumi_feature_enabled_mask & (KSM_FEATURE_MOUNT_HIDE | KSM_FEATURE_MAPS_SPOOF)))
 		return 0;
@@ -1137,6 +1142,8 @@ static int kasumi_seq_read_maps_filter_ret(struct kretprobe_instance *ri, struct
 	char *path;
 	size_t new_len;
 
+	if (in_atomic() || irqs_disabled())
+		return 0;
 	if (!(kasumi_feature_enabled_mask & KSM_FEATURE_MAPS_SPOOF) ||
 	    !kasumi_should_apply_hide_rules())
 		return 0;
@@ -1251,72 +1258,14 @@ void kasumi_statfs_apply_spoof(void __user *buf, unsigned long spoof_f_type)
 
 void kasumi_handle_sys_enter_statfs(struct pt_regs *regs, long id)
 {
-#if defined(__aarch64__) || defined(__x86_64__)
-	struct kasumi_percpu *pcpu = kasumi_this_cpu();
-	const char __user *pathname_user;
-	void __user *buf;
-	char path_buf[KSM_MAX_LEN_PATHNAME];
-
-	pcpu->statfs_ctx.active = 0;
-#ifdef __NR_statfs
-	if (id != __NR_statfs)
-		return;
-#else
-	(void)id;
-	return;
-#endif
-	if (!(kasumi_feature_enabled_mask & KSM_FEATURE_STATFS_SPOOF) ||
-	    !kasumi_should_apply_hide_rules())
-		return;
-#if defined(__aarch64__)
-	pathname_user = (const char __user *)(uintptr_t)regs->regs[0];
-	buf = (void __user *)(uintptr_t)regs->regs[1];
-#else
-	pathname_user = (const char __user *)(uintptr_t)regs->di;
-	buf = (void __user *)(uintptr_t)regs->si;
-#endif
-	if (!pathname_user || !buf)
-		return;
-	if (kasumi_strncpy_from_user_nofault) {
-		long n = kasumi_strncpy_from_user_nofault(path_buf, pathname_user,
-							  sizeof(path_buf) - 1);
-		if (n < 0)
-			return;
-		path_buf[n < (long)(sizeof(path_buf) - 1) ? n :
-			 (long)(sizeof(path_buf) - 1)] = '\0';
-	} else {
-		if (copy_from_user(path_buf, pathname_user, sizeof(path_buf) - 1))
-			return;
-		path_buf[sizeof(path_buf) - 1] = '\0';
-	}
-
-	pcpu->statfs_ctx.spoof_f_type = kasumi_statfs_resolve_spoof_magic(path_buf);
-	if (pcpu->statfs_ctx.spoof_f_type == 0)
-		return;
-	pcpu->statfs_ctx.buf = buf;
-	pcpu->statfs_ctx.active = 1;
-#else
 	(void)regs;
 	(void)id;
-#endif
 }
 
 void kasumi_handle_sys_exit_statfs(struct pt_regs *regs, long ret)
 {
-#if defined(__aarch64__) || defined(__x86_64__)
-	struct kasumi_percpu *pcpu = kasumi_this_cpu();
-
-	(void)regs;
-	if (!pcpu->statfs_ctx.active)
-		return;
-	pcpu->statfs_ctx.active = 0;
-	if (ret < 0)
-		return;
-	kasumi_statfs_apply_spoof(pcpu->statfs_ctx.buf, pcpu->statfs_ctx.spoof_f_type);
-#else
 	(void)regs;
 	(void)ret;
-#endif
 }
 
 static int kasumi_statfs_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
@@ -1334,6 +1283,8 @@ static int kasumi_statfs_entry(struct kretprobe_instance *ri, struct pt_regs *re
 	pathname = NULL;
 #endif
 	d->spoof_f_type = 0;
+	if (in_atomic() || irqs_disabled())
+		return 0;
 	if (!(kasumi_feature_enabled_mask & KSM_FEATURE_STATFS_SPOOF) ||
 	    !kasumi_should_apply_hide_rules() ||
 	    !pathname)
@@ -1354,6 +1305,9 @@ static int kasumi_statfs_entry(struct kretprobe_instance *ri, struct pt_regs *re
 static int kasumi_statfs_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	long ret;
+
+	if (in_atomic() || irqs_disabled())
+		return 0;
 #if defined(__aarch64__)
 	ret = (long)regs->regs[0];
 #elif defined(__x86_64__)

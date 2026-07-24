@@ -64,16 +64,6 @@ struct kasumi_percpu {
 		size_t count;
 		int active;
 	} cmdline_ctx;
-	struct {
-		struct statx __user *buf;
-		char path[KSM_MAX_LEN_PATHNAME];
-		int active;
-	} statx_ctx;
-	struct {
-		void __user *buf;
-		unsigned long spoof_f_type;
-		int active;
-	} statfs_ctx;
 #endif
 	int mount_proxy_pending;
 };

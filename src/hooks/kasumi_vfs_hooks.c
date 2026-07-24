@@ -628,6 +628,10 @@ static KASUMI_NOCFI int kasumi_kp_getname_flags_pre(struct kprobe *p, struct pt_
 	bool have_path_filters;
 
 	(void)p;
+	/* getname_kernel(), cache refresh and rule resolution can sleep.  Kprobe
+	 * handlers cannot provide this fallback safely; fail open. */
+	if (in_atomic() || irqs_disabled())
+		return 0;
 
 	if (kasumi_this_cpu()->kprobe_reent)
 		return 0;
@@ -937,6 +941,10 @@ KASUMI_NOCFI int kasumi_krp_vfs_getxattr_entry(struct kretprobe_instance *ri,
 	d->src_ctx[0] = '\0';
 	d->src_ctx_len = 0;
 	atomic64_inc(&kasumi_hook_stats.getxattr_entries);
+	/* Source-path resolution performs GFP_KERNEL allocation, kern_path() and
+	 * xattr I/O.  A kretprobe callback must not execute that sequence. */
+	if (in_atomic() || irqs_disabled())
+		return 0;
 
 	/* Skip when we're in the inner call (resolving source path's context) */
 	if (atomic_long_read(&kasumi_xattr_source_tgid) == (long)task_tgid_vnr(current))

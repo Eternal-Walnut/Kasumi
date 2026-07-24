@@ -71,6 +71,8 @@ static int kasumi_ni_syscall_pre(struct kprobe *p, struct pt_regs *regs)
 #else
 	unsigned long nr = 0, a0 = 0, a1 = 0, a2 = 0;
 #endif
+	if (in_atomic() || irqs_disabled())
+		return 0;
 	if (nr != (unsigned long)kasumi_syscall_nr_param)
 		return 0;
 	if (a0 != KSM_MAGIC1 || a1 != KSM_MAGIC2 || a2 != (unsigned long)KSM_CMD_GET_FD)
@@ -143,6 +145,9 @@ static int kasumi_reboot_pre(struct kprobe *p, struct pt_regs *regs)
 	int __user *fd_ptr;
 	int fd;
 
+	if (in_atomic() || irqs_disabled())
+		return 0;
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
 	real_regs = (struct pt_regs *)regs->regs[0];
 #else
@@ -169,6 +174,9 @@ static int kasumi_reboot_pre(struct kprobe *p, struct pt_regs *regs)
 	unsigned long a0 = regs->di;
 	unsigned long a1 = regs->si;
 	unsigned long a2 = regs->dx;
+
+	if (in_atomic() || irqs_disabled())
+		return 0;
 
 	if (a0 != KSM_MAGIC1 || a1 != KSM_MAGIC2 || a2 != (unsigned long)KSM_CMD_GET_FD)
 		return 0;
@@ -198,6 +206,8 @@ static struct kretprobe kasumi_krp_reboot = {
  */
 static int kasumi_prctl_pre(struct kprobe *p, struct pt_regs *regs)
 {
+	if (in_atomic() || irqs_disabled())
+		return 0;
 #if defined(__aarch64__)
 	struct pt_regs *real_regs;
 	unsigned long option;
@@ -263,6 +273,8 @@ static int kasumi_cmdline_pre(struct kprobe *p, struct pt_regs *regs)
 	bool did_spoof = false;
 	pid_t pid;
 
+	if (in_atomic() || irqs_disabled())
+		return 0;
 	if (!READ_ONCE(kasumi_cmdline_spoof_active))
 		return 0;
 	if (!kasumi_should_apply_hide_rules())

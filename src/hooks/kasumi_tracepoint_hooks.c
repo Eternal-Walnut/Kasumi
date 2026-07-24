@@ -57,7 +57,8 @@ static void kasumi_sys_enter_handler(void *data, struct pt_regs *regs, long id)
 	 * apply_scoped_current short-circuits when not active or already
 	 * applied, so this is near-zero cost on the fast path.
 	 */
-	if (kasumi_uname_scoped_active() && kasumi_should_apply_hide_rules())
+	if (!in_atomic() && !irqs_disabled() &&
+	    kasumi_uname_scoped_active() && kasumi_should_apply_hide_rules())
 		kasumi_uname_apply_scoped_current();
 
 	if (!kasumi_syscall_id_relevant(id))

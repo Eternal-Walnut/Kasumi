@@ -82,7 +82,8 @@ int  kasumi_syscall_dispatcher_nr = -1;
 static kasumi_syscall_hook_fn hooks[__NR_syscalls];
 static kasumi_syscall_hook_fn saved_ni;
 DEFINE_STATIC_SRCU(kasumi_redirect_srcu);
-kasumi_syscall_hook_fn orig_kernel_openat, orig_kernel_openat2, orig_kernel_statfs, orig_kernel_fstatfs;
+kasumi_syscall_hook_fn orig_kernel_openat, orig_kernel_openat2, orig_kernel_statx;
+kasumi_syscall_hook_fn orig_kernel_statfs, orig_kernel_fstatfs;
 #ifdef __NR_statfs64
 kasumi_syscall_hook_fn orig_kernel_statfs64;
 #endif
@@ -339,71 +340,6 @@ static long h_read(const struct pt_regs *regs)
 
 /* ---- path redirect + mount proxy (TSR) --------------------------------- */
 
-static KASUMI_NOCFI long kasumi_copy_user_path_at(int dirfd, const char __user *u,
-				     char *path, size_t size)
-{
-	char *page;
-	char *dir;
-	struct file *file;
-	struct path pwd;
-	long len;
-	int written;
-
-	if (!u || !path || size == 0)
-		return -EINVAL;
-	len = strncpy_from_user(path, u, size);
-	if (len <= 0 || len >= size)
-		return len;
-	path[size - 1] = '\0';
-	if (path[0] == '/' || !kasumi_d_path)
-		return len;
-
-	page = (char *)__get_free_page(GFP_KERNEL);
-	if (!page)
-		return len;
-	if (dirfd == AT_FDCWD) {
-		if (!current->fs || !kasumi_path_get_ptr)
-			goto out_free;
-		spin_lock(&current->fs->lock);
-		pwd = current->fs->pwd;
-		kasumi_path_get(&pwd);
-		spin_unlock(&current->fs->lock);
-		dir = kasumi_d_path(&pwd, page, PAGE_SIZE);
-		if (!IS_ERR_OR_NULL(dir) && dir[0] == '/') {
-			char rel[KSM_MAX_LEN_PATHNAME];
-
-			strscpy(rel, path, sizeof(rel));
-			if (strcmp(dir, "/") == 0)
-				written = scnprintf(path, size, "/%s", rel);
-			else
-				written = scnprintf(path, size, "%s/%s", dir, rel);
-			if (written > 0 && written < size)
-				len = written;
-		}
-		kasumi_path_put(&pwd);
-		goto out_free;
-	}
-	file = fget(dirfd);
-	if (!file)
-		goto out_free;
-	dir = kasumi_d_path(&file->f_path, page, PAGE_SIZE);
-	if (!IS_ERR_OR_NULL(dir) && dir[0] == '/') {
-		char rel[KSM_MAX_LEN_PATHNAME];
-
-		strscpy(rel, path, sizeof(rel));
-		if (strcmp(dir, "/") == 0)
-			written = scnprintf(path, size, "/%s", rel);
-		else
-			written = scnprintf(path, size, "%s/%s", dir, rel);
-		if (written > 0 && written < size)
-			len = written;
-	}
-	fput(file);
-out_free:
-	free_page((unsigned long)page);
-	return len;
-}
-
 static long do_openat(const struct pt_regs *regs, kasumi_syscall_hook_fn orig)
 {
 	char path[KSM_MAX_LEN_PATHNAME];
@@ -417,8 +353,9 @@ static long do_openat(const struct pt_regs *regs, kasumi_syscall_hook_fn orig)
 	if (atomic_long_read(&kasumi_ioctl_tgid) == tgid ||
 	    atomic_long_read(&kasumi_xattr_source_tgid) == tgid)
 		return orig(regs);
-	if (kasumi_copy_user_path_at(dirfd, u, path, sizeof(path)) <= 0)
+	if (!u || copy_from_user(path, u, sizeof(path) - 1))
 		return orig(regs);
+	path[sizeof(path) - 1] = '\0';
 
 	if (path[0] == '/' && kasumi_path_needs_proc_proxy(path)) {
 		raw_proc_proxy = true;
@@ -461,6 +398,68 @@ static long do_openat(const struct pt_regs *regs, kasumi_syscall_hook_fn orig)
 static long h_openat(const struct pt_regs *r)  { return do_openat(r, orig_kernel_openat); }
 static long h_openat2(const struct pt_regs *r) { return do_openat(r, orig_kernel_openat2); }
 
+#ifdef __NR_statx
+/*
+ * statx mount-id spoofing must run in the syscall wrapper, not in the
+ * sys_enter/sys_exit tracepoint pair.  The wrapper is ordinary process
+ * context, so path lookup, cache refresh, and user copies are allowed.  It
+ * also keeps the input path and output buffer paired to one syscall instead
+ * of storing them in a per-CPU slot that can be reused by another task.
+ */
+static long h_statx(const struct pt_regs *regs)
+{
+	char path[KSM_MAX_LEN_PATHNAME];
+	struct statx stx;
+	const char __user *pathname;
+	struct statx __user *buf;
+	long ret;
+	int fake_mnt_id;
+
+	if (!orig_kernel_statx)
+		return -ENOSYS;
+
+#if defined(__aarch64__)
+	pathname = (const char __user *)(uintptr_t)regs->regs[1];
+	buf = (struct statx __user *)(uintptr_t)regs->regs[4];
+#elif defined(__x86_64__)
+	pathname = (const char __user *)(uintptr_t)regs->si;
+	buf = (struct statx __user *)(uintptr_t)regs->r8;
+#else
+	return orig_kernel_statx(regs);
+#endif
+
+	if (!(kasumi_feature_enabled_mask & KSM_FEATURE_MOUNT_HIDE) ||
+	    !kasumi_should_apply_hide_rules() || !pathname || !buf)
+		return orig_kernel_statx(regs);
+
+	if (copy_from_user(path, pathname, sizeof(path) - 1))
+		return orig_kernel_statx(regs);
+	path[sizeof(path) - 1] = '\0';
+
+	ret = orig_kernel_statx(regs);
+	if (ret != 0)
+		return ret;
+
+	fake_mnt_id = kasumi_fake_mi_lookup_mount_id(path);
+	if (fake_mnt_id <= 0 || !kasumi_copy_from_user_nofault ||
+	    !kasumi_copy_to_user_nofault)
+		return ret;
+
+	/* Normal syscall context permits the regular accessors.  The nofault
+	 * helpers remain useful here because statx buffers can be concurrently
+	 * unmapped by userspace; failure simply leaves the kernel result intact. */
+	if (kasumi_copy_from_user_nofault(&stx, buf, sizeof(stx)) != 0)
+		return ret;
+	stx.stx_mnt_id = (u64)fake_mnt_id;
+	if (kasumi_copy_to_user_nofault(buf, &stx, sizeof(stx)) != 0)
+		return ret;
+
+	kasumi_log("statx spoof: path=%s fake_mnt_id=%d pid=%d comm=%s\n",
+		 path, fake_mnt_id, task_pid_nr(current), current->comm);
+	return ret;
+}
+#endif
+
 static long h_statfs(const struct pt_regs *regs)
 {
 	char path[KSM_MAX_LEN_PATHNAME];
@@ -471,20 +470,10 @@ static long h_statfs(const struct pt_regs *regs)
 	if (!(kasumi_feature_enabled_mask & KSM_FEATURE_STATFS_SPOOF) ||
 	    !kasumi_should_apply_hide_rules())
 		return orig_kernel_statfs(regs);
-
-       
-#if defined(__aarch64__)
-	u = (const char __user *)(uintptr_t)regs->regs[0];
-	buf = (void __user *)(uintptr_t)regs->regs[1];
-#else
-	u = (const char __user *)(uintptr_t)regs->di;
-	buf = (void __user *)(uintptr_t)regs->si;
-#endif
-	if (kasumi_copy_user_path_at(AT_FDCWD, u, path, sizeof(path)) <= 0)
-		return orig(regs);
-    
-	if (path[0] == '/' && kasumi_should_hide(path))
-		return -ENOENT;
+	if (copy_from_user(path, (void __user *)(uintptr_t)regs->regs[0],
+			  sizeof(path) - 1))
+		return orig_kernel_statfs(regs);
+	path[sizeof(path) - 1] = 0;
 
 	s = kasumi_statfs_resolve_spoof_magic(path);
 	ret = orig_kernel_statfs(regs);
@@ -542,6 +531,10 @@ int kasumi_syscall_redirect_init(void)
 		kasumi_syscall_table)[__NR_openat];
 	orig_kernel_openat2 = ((kasumi_syscall_hook_fn *)
 		kasumi_syscall_table)[__NR_openat2];
+#ifdef __NR_statx
+	orig_kernel_statx = ((kasumi_syscall_hook_fn *)
+		kasumi_syscall_table)[__NR_statx];
+#endif
 	orig_kernel_statfs = ((kasumi_syscall_hook_fn *)
 		kasumi_syscall_table)[__NR_statfs];
 	orig_kernel_fstatfs = ((kasumi_syscall_hook_fn *)
@@ -592,6 +585,12 @@ int kasumi_syscall_redirect_init(void)
 	int n = 0;
 	kasumi_register_syscall_hook(__NR_openat,  h_openat);  n++;
 	kasumi_register_syscall_hook(__NR_openat2, h_openat2); n++;
+#ifdef __NR_statx
+	if (orig_kernel_statx) {
+		kasumi_register_syscall_hook(__NR_statx, h_statx);
+		n++;
+	}
+#endif
 	kasumi_register_syscall_hook(__NR_statfs,  h_statfs);  n++;
 	kasumi_register_syscall_hook(__NR_fstatfs, h_fstatfs); n++;
 #ifdef __NR_statfs64
@@ -629,7 +628,7 @@ static void kasumi_redirect_drain_done(struct rcu_head *head)
 	complete(s->done);
 }
 
-KASUMI_NOCFI void kasumi_syscall_redirect_exit(void)
+void kasumi_syscall_redirect_exit(void)
 {
 	DECLARE_COMPLETION_ONSTACK(drain_done);
 	static struct kasumi_drain_state drain;
@@ -707,6 +706,9 @@ KASUMI_NOCFI void kasumi_syscall_redirect_exit(void)
 	kasumi_syscall_dispatcher_nr = -1;
 	orig_kernel_openat  = NULL;
 	orig_kernel_openat2 = NULL;
+#ifdef __NR_statx
+	orig_kernel_statx   = NULL;
+#endif
 	orig_kernel_statfs  = NULL;
 	orig_kernel_fstatfs = NULL;
 #ifdef __NR_statfs64

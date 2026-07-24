@@ -466,87 +466,27 @@ out:
 #endif
 }
 
-KASUMI_NOCFI void kasumi_handle_sys_enter_statx(struct pt_regs *regs, long id)
+void kasumi_handle_sys_enter_statx(struct pt_regs *regs, long id)
 {
 #if defined(__aarch64__) || defined(__x86_64__)
-	struct kasumi_percpu *pcpu = kasumi_this_cpu();
-	const char __user *filename_user;
-	unsigned long buf_ptr;
-	char *path;
-
-	pcpu->statx_ctx.active = 0;
-	if (id != __NR_statx)
-		return;
-	if (!(kasumi_feature_enabled_mask & KSM_FEATURE_MOUNT_HIDE) ||
-	    !kasumi_should_apply_hide_rules())
-		return;
-
-#if defined(__aarch64__)
-	filename_user = (const char __user *)(uintptr_t)regs->regs[1];
-	buf_ptr = regs->regs[4];
-#else
-	filename_user = (const char __user *)(uintptr_t)regs->si;
-	buf_ptr = regs->r8;
-#endif
-	if (!filename_user || !buf_ptr)
-		return;
-
-	path = pcpu->statx_ctx.path;
-	if (kasumi_strncpy_from_user_nofault) {
-		long n = kasumi_strncpy_from_user_nofault(path, filename_user,
-							KSM_MAX_LEN_PATHNAME - 1);
-		if (n < 0)
-			return;
-		path[n < (long)(KSM_MAX_LEN_PATHNAME - 1) ? n :
-		     (long)(KSM_MAX_LEN_PATHNAME - 1)] = '\0';
-	} else {
-		if (copy_from_user(path, filename_user, KSM_MAX_LEN_PATHNAME - 1))
-			return;
-		path[KSM_MAX_LEN_PATHNAME - 1] = '\0';
-	}
-
-	if (path[0] != '/')
-		return;
-
-	pcpu->statx_ctx.buf = (struct statx __user *)(uintptr_t)buf_ptr;
-	pcpu->statx_ctx.active = 1;
+	/* statx is redirected to h_statx in process context when TSR is active.
+	 * The old tracepoint implementation stored a user pointer in per-CPU
+	 * state and then took g_cache.lock from sys_exit, which is unsafe and can
+	 * pair one task's entry with another task's exit.  Keep this callback
+	 * deliberately empty for fallback/unsupported kernels. */
+	(void)regs;
+	(void)id;
 #else
 	(void)regs;
 	(void)id;
 #endif
 }
 
-KASUMI_NOCFI void kasumi_handle_sys_exit_statx(struct pt_regs *regs, long ret)
+void kasumi_handle_sys_exit_statx(struct pt_regs *regs, long ret)
 {
 #if defined(__aarch64__) || defined(__x86_64__)
-	struct kasumi_percpu *pcpu = kasumi_this_cpu();
-	struct statx stx;
-	int fake_mnt_id;
-
 	(void)regs;
-	if (!pcpu->statx_ctx.active)
-		return;
-	pcpu->statx_ctx.active = 0;
-	if (ret != 0 || !pcpu->statx_ctx.buf)
-		return;
-
-	fake_mnt_id = kasumi_fake_mi_lookup_mount_id(pcpu->statx_ctx.path);
-	if (fake_mnt_id <= 0)
-		return;
-	if (!kasumi_copy_from_user_nofault || !kasumi_copy_to_user_nofault)
-		return;
-	if (kasumi_copy_from_user_nofault(&stx, pcpu->statx_ctx.buf,
-					  sizeof(stx)) != 0)
-		return;
-
-	stx.stx_mnt_id = (u64)fake_mnt_id;
-	if (kasumi_copy_to_user_nofault(pcpu->statx_ctx.buf, &stx,
-					sizeof(stx)) != 0)
-		return;
-
-	kasumi_log("statx spoof: path=%s fake_mnt_id=%d pid=%d comm=%s\n",
-		 pcpu->statx_ctx.path, fake_mnt_id,
-		 task_pid_nr(current), current->comm);
+	(void)ret;
 #else
 	(void)regs;
 	(void)ret;
@@ -568,7 +508,7 @@ void kasumi_handle_sys_exit_path(struct pt_regs *regs, long ret)
 	(void)kasumi_mount_proxy_install_fd((int)ret);
 }
 
-KASUMI_NOCFI void kasumi_handle_sys_enter_path(struct pt_regs *regs, long id)
+void kasumi_handle_sys_enter_path(struct pt_regs *regs, long id)
 {
 	const char __user *filename_user;
 	char *buf;

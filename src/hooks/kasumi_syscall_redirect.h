@@ -23,6 +23,7 @@ void kasumi_unregister_syscall_hook(int nr);
 bool kasumi_has_syscall_hook(int nr);
 extern kasumi_syscall_hook_fn orig_kernel_openat;
 extern kasumi_syscall_hook_fn orig_kernel_openat2;
+extern kasumi_syscall_hook_fn orig_kernel_statx;
 extern kasumi_syscall_hook_fn orig_kernel_statfs;
 extern kasumi_syscall_hook_fn orig_kernel_fstatfs;
 #ifdef __NR_statfs64

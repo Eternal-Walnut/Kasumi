@@ -591,10 +591,10 @@ static int cursor_locate_locked(struct file *f, pid_t tgid, u64 cur_gen)
 void kasumi_fake_mi_invalidate_all(void)
 {
     unsigned long flags;
-	int i;
+    int i;
 
-	if (!READ_ONCE(g_cache_initialized))
-		return;
+    if (!READ_ONCE(g_cache_initialized))
+        return;
 
     spin_lock_irqsave(&g_cursors_lock, flags);
     for (i = 0; i < FAKE_MI_CURSORS; i++)
@@ -611,8 +611,8 @@ int kasumi_fake_mi_prepare(bool force)
 {
     int ret = 0;
 
-	if (!READ_ONCE(g_cache_initialized))
-		return -ENODEV;
+    if (!READ_ONCE(g_cache_initialized))
+        return -ENODEV;
     /*
      * This helper is also reachable from syscall tracepoints and kprobe
      * return handlers.  Those callbacks run with preemption disabled and
@@ -721,8 +721,8 @@ ssize_t kasumi_fake_mi_read_iter(struct kiocb *iocb, struct iov_iter *to)
 
     if (!iocb || !to)
         return -EINVAL;
-	if (!READ_ONCE(g_cache_initialized))
-		return -ENODEV;
+    if (!READ_ONCE(g_cache_initialized))
+        return -ENODEV;
     if (in_atomic() || irqs_disabled())
         return -EWOULDBLOCK;
     file = iocb->ki_filp;
@@ -763,8 +763,8 @@ int kasumi_fake_mi_lookup_mount_id(const char *path)
 
     if (!path || !path[0])
         return -EINVAL;
-	if (!READ_ONCE(g_cache_initialized))
-		return -ENODEV;
+    if (!READ_ONCE(g_cache_initialized))
+        return -ENODEV;
 
     /* The lookup currently shares g_cache.lock with regeneration.  It is
      * therefore process-context only; never attempt the mutex from a
@@ -814,7 +814,7 @@ out_unlock:
 int kasumi_fake_mi_init(void)
 {
     mutex_init(&g_cache.lock);
-	WRITE_ONCE(g_cache_initialized, true);
+    WRITE_ONCE(g_cache_initialized, true);
     memset(g_cursors, 0, sizeof(g_cursors));
 
     ptr_filp_open  = (void *)kasumi_lookup_name("filp_open");
@@ -832,8 +832,8 @@ int kasumi_fake_mi_init(void)
 
 void kasumi_fake_mi_exit(void)
 {
-	if (!READ_ONCE(g_cache_initialized))
-		return;
+    if (!READ_ONCE(g_cache_initialized))
+        return;
 
     mutex_lock(&g_cache.lock);
     if (g_cache.buf) {
@@ -843,5 +843,5 @@ void kasumi_fake_mi_exit(void)
     g_cache.len = 0;
     g_cache.valid = false;
     mutex_unlock(&g_cache.lock);
-	WRITE_ONCE(g_cache_initialized, false);
+    WRITE_ONCE(g_cache_initialized, false);
 }

@@ -13,18 +13,18 @@ Kasumi was previously developed as HymoFS. The project name, module name, usersp
 - Repository type: LKM (not an in-tree kernel patch set)
 - Main code: `src/`
 - Control protocol: `src/include/kasumi_uapi.h`
-- Current protocol version: `KSM_PROTOCOL_VERSION = 16`
-- Hook strategy: syscall-table TSR for the hot path, with fop/iop shadows and kprobe/ftrace fallbacks where needed
+- Current protocol version: `KSM_PROTOCOL_VERSION = 15`
+- Hook strategy: ftrace/tracepoint first when available, with kprobe/kretprobe fallback
 - 6.6+ compatibility for `arch_ftrace_get_regs` is included in current code
 
 ## Core Capabilities
 
-- Path redirect: `src -> target`, including `openat`, `statx`, `newfstatat`, `faccessat`, and xattr path syscalls
+- Path redirect: `src -> target`
 - Reverse mapping for path presentation (`d_path` related flow)
 - Directory entry hiding (`iterate_dir` filtering)
 - Directory merge/injection behavior
 - `kstat` spoofing (ino/dev/size/time, etc.)
-- Overlay/xattr related filtering and SELinux label presentation for injected files
+- Overlay/xattr related filtering
 - `uname` spoofing
 - `/proc/cmdline` spoofing
 - `/proc/<pid>/maps` spoofing rules (ino/dev/pathname)
@@ -34,9 +34,8 @@ Use in controlled environments only. This module hooks VFS and syscall hot paths
 
 ## Hook Overview
 
-- GET_FD path: syscall-table TSR through `reboot`/`prctl`, with legacy kprobe fallbacks
-- Path syscalls: syscall-table TSR covers `openat/openat2`, `statx`, `newfstatat`, `faccessat`, `getxattr/lgetxattr`, and `listxattr/llistxattr`
-- VFS path: iop/fop shadow hooks handle `getattr` and `readdir`; ftrace/kretprobe paths remain as fallbacks where enabled
+- GET_FD path: `tracepoint` preferred, fallback to `kprobe/kretprobe`
+- VFS path: `ftrace` (entry) + `kretprobe` (ret) preferred, fallback to `kprobe`
 - Symbol resolution: prefer `kallsyms_lookup_name`, fallback to per-symbol kprobe resolution
 
 ## CI KMI Targets
@@ -118,7 +117,6 @@ In addition, the [hybrid-mount](https://github.com/Hybrid-Mount/meta-hybrid_moun
 - `Unknown symbol __tracepoint_sys_enter`: try `kasumi_no_tracepoint=1`
 - Builds but cannot load: check `vermagic`, module signature policy, and `dmesg`
 - Hook/ABI changes: validate with `KSM_IOC_GET_HOOKS` and `KSM_IOC_GET_FEATURES`
-- Merge/injection regressions: compare `ls`, `ls -l`, `ls -Z`, and `getfattr -n security.selinux` on both canonical and symlinked paths
 
 ## Repository Layout
 

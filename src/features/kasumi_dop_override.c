@@ -60,6 +60,8 @@ static char *kasumi_shadow_dname(struct dentry *dentry, char *buf, int buflen)
 	char *out;
 
 	atomic64_inc(&kasumi_hook_stats.dop_dname_entries);
+	if (!kasumi_should_apply_hide_rules())
+		return ERR_PTR(-ENOENT);
 
 	rcu_read_lock();
 	m = kasumi_dop_lookup_rcu(dentry);
@@ -149,7 +151,7 @@ static struct kasumi_dop_meta *kasumi_dop_uninstall_locked(struct dentry *dentry
 	return m;
 }
 
-KASUMI_NOCFI int kasumi_dop_uninstall_path(const char *path)
+int kasumi_dop_uninstall_path(const char *path)
 {
 	struct path p;
 	int ret;

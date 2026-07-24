@@ -53,6 +53,7 @@
 #include "kasumi_overlay.h"
 #include "kasumi_vfs_hooks.h"
 #include "kasumi_proc_hooks.h"
+#include "kasumi_tracepoint_hooks.h"
 #include "kasumi_ftrace_hooks.h"
 #include "kasumi_fake_mountinfo.h"
 #include "kasumi_iop_override.h"
@@ -75,7 +76,9 @@ kasumi_filldir_filter(struct dir_context *ctx, const char *name,
 	struct kasumi_filldir_wrapper *w =
 		container_of(ctx, struct kasumi_filldir_wrapper, wrap_ctx);
 	KASUMI_FILLDIR_RET_TYPE ret;
-	bool apply_hide = kasumi_should_apply_hide_rules();
+
+	if (!kasumi_should_apply_hide_rules())
+		goto passthrough;
 
 	/* Inject phase: before first real entry, emit entries from merge targets
 	 * and kasumi_paths into the directory listing. */
@@ -115,7 +118,7 @@ kasumi_filldir_filter(struct dir_context *ctx, const char *name,
 			goto passthrough;
 	}
 
-	if (apply_hide && kasumi_stealth_enabled && w->dir_path_len == 4) {
+	if (kasumi_stealth_enabled && w->dir_path_len == 4) {
 		size_t mlen = strlen(kasumi_current_mirror_name);
 		if ((unsigned int)namlen == mlen &&
 		    memcmp(name, kasumi_current_mirror_name, namlen) == 0)
@@ -127,9 +130,9 @@ kasumi_filldir_filter(struct dir_context *ctx, const char *name,
 	 * replaces the original, just like original kasumi.c does.
 	 * Skip when merge target IS the dir we're listing (e.g. target path
 	 * resolved to same inode via symlink) - otherwise we'd hide everything.
-	 * This is independent of app-hide policy because explicit merge rules
-	 * must not emit duplicate names even during root/manual validation. */
-	if (kasumi_d_hash_and_lookup && w->merge_target_count > 0 && w->parent_dentry) {
+	 * Must respect allowlist: privileged/allowlist processes see real files. */
+	if (kasumi_d_hash_and_lookup && w->merge_target_count > 0 && w->parent_dentry &&
+	    !kasumi_is_privileged_process() && kasumi_should_apply_hide_rules()) {
 		int i;
 		for (i = 0; i < w->merge_target_count; i++) {
 			struct dentry *tgt = w->merge_target_dentries[i];
@@ -149,7 +152,8 @@ kasumi_filldir_filter(struct dir_context *ctx, const char *name,
 		}
 	}
 
-	if (kasumi_d_hash_and_lookup && w->dir_has_hidden && w->parent_dentry) {
+	if (kasumi_d_hash_and_lookup && w->dir_has_hidden && w->parent_dentry &&
+	    !kasumi_is_privileged_process() && kasumi_should_apply_hide_rules()) {
 		struct dentry *child;
 
 		child = kasumi_d_hash_and_lookup(w->parent_dentry,
@@ -212,7 +216,7 @@ passthrough:
 #define KASUMI_POP_STACK(regs)	do { } while (0)
 #endif
 
-/* Path register pointer for syscall-entry style pt_regs (avoids u64* vs unsigned long* across archs). */
+/* Path register pointer for syscall tracepoint (avoids u64* vs unsigned long* across archs) */
 #if defined(__aarch64__) || defined(__x86_64__)
 #define KASUMI_PATH_REG_PTR(regs, id)  ((u64 *)((id) == __NR_execve ? &KASUMI_REG0(regs) : &KASUMI_REG1(regs)))
 #define KASUMI_PATH_REG_VAL(p)         ((u64)(uintptr_t)(p))
@@ -353,8 +357,8 @@ void kasumi_handle_sys_exit_getfd(struct pt_regs *regs, long ret)
 }
 
 #if defined(__aarch64__) || defined(__x86_64__)
-/* Cmdline spoof: check if fd refers to /proc/cmdline. Used by the direct
- * h_read handler and kretprobe fallback. */
+/* Cmdline spoof: check if fd refers to /proc/cmdline.  Used by both the
+ * tracepoint sys_enter path and the TSR h_read handler. */
 bool kasumi_fd_is_proc_cmdline(int fd)
 {
 	struct file *file;
@@ -388,7 +392,7 @@ void kasumi_handle_sys_enter_cmdline(struct pt_regs *regs, long id)
 	if (id != __NR_read)
 		return;
 	/*
-	 * If the TSR has installed h_read, it owns the spoof in one
+	 * If the TSR redirect has installed h_read, it owns the spoof in one
 	 * shot — leave the percpu cmdline_ctx untouched so the sys_exit handler
 	 * doesn't double-spoof an already-rewritten buffer.
 	 */
@@ -462,7 +466,7 @@ out:
 #endif
 }
 
-KASUMI_NOCFI void kasumi_handle_sys_enter_statx(struct pt_regs *regs, long id)
+void kasumi_handle_sys_enter_statx(struct pt_regs *regs, long id)
 {
 #if defined(__aarch64__) || defined(__x86_64__)
 	struct kasumi_percpu *pcpu = kasumi_this_cpu();
@@ -512,7 +516,7 @@ KASUMI_NOCFI void kasumi_handle_sys_enter_statx(struct pt_regs *regs, long id)
 #endif
 }
 
-KASUMI_NOCFI void kasumi_handle_sys_exit_statx(struct pt_regs *regs, long ret)
+void kasumi_handle_sys_exit_statx(struct pt_regs *regs, long ret)
 {
 #if defined(__aarch64__) || defined(__x86_64__)
 	struct kasumi_percpu *pcpu = kasumi_this_cpu();
@@ -526,7 +530,7 @@ KASUMI_NOCFI void kasumi_handle_sys_exit_statx(struct pt_regs *regs, long ret)
 	if (ret != 0 || !pcpu->statx_ctx.buf)
 		return;
 
-	fake_mnt_id = kasumi_fake_mi_lookup_mount_id_cached(pcpu->statx_ctx.path);
+	fake_mnt_id = kasumi_fake_mi_lookup_mount_id(pcpu->statx_ctx.path);
 	if (fake_mnt_id <= 0)
 		return;
 	if (!kasumi_copy_from_user_nofault || !kasumi_copy_to_user_nofault)
@@ -564,7 +568,7 @@ void kasumi_handle_sys_exit_path(struct pt_regs *regs, long ret)
 	(void)kasumi_mount_proxy_install_fd((int)ret);
 }
 
-KASUMI_NOCFI void kasumi_handle_sys_enter_path(struct pt_regs *regs, long id)
+void kasumi_handle_sys_enter_path(struct pt_regs *regs, long id)
 {
 	const char __user *filename_user;
 	char *buf;
@@ -650,41 +654,6 @@ KASUMI_NOCFI void kasumi_handle_sys_enter_path(struct pt_regs *regs, long id)
 	}
 }
 
-/* names_cachep, resolved at vfs hooks init, for atomic struct filename build. */
-static struct kmem_cache *kasumi_names_cachep;
-
-/*
- * Atomic-context replacement for getname_kernel(). The getname kprobe
- * pre-handler runs preempt-disabled; getname_kernel()'s __getname() uses
- * GFP_KERNEL and can schedule-while-atomic on CONFIG_PREEMPT. Build a
- * putname-compatible struct filename (embedded name, allocated from
- * names_cachep so __putname/kmem_cache_free frees it) with GFP_ATOMIC instead.
- */
-static struct filename *kasumi_getname_atomic(const char *path)
-{
-	struct filename *result;
-	size_t len = strlen(path) + 1;
-	size_t embedded_max = PATH_MAX - offsetof(struct filename, iname);
-
-	if (!kasumi_names_cachep || len > embedded_max)
-		return ERR_PTR(-ENAMETOOLONG);
-	result = kmem_cache_alloc(kasumi_names_cachep, GFP_ATOMIC);
-	if (!result)
-		return ERR_PTR(-ENOMEM);
-	memcpy((char *)result->iname, path, len);
-	result->name = result->iname;
-	result->uptr = NULL;
-	result->aname = NULL;
-	/* struct filename.refcnt became atomic_t in v6.5 (Android KMI: int on
-	 * 5.x/6.1, atomic_t on 6.6+). Keep this builder KMI-portable. */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)
-	atomic_set(&result->refcnt, 1);
-#else
-	result->refcnt = 1;
-#endif
-	return result;
-}
-
 /* getname_flags pre-handler: only modify user path and regs; return 0 to run original. */
 static KASUMI_NOCFI int kasumi_kp_getname_flags_pre(struct kprobe *p, struct pt_regs *regs)
 {
@@ -727,15 +696,10 @@ static KASUMI_NOCFI int kasumi_kp_getname_flags_pre(struct kprobe *p, struct pt_
 		buf[KASUMI_PATH_BUF - 1] = '\0';
 	}
 
-	/*
-	 * Do NOT prewarm the fake-mountinfo cache from this kprobe pre-handler.
-	 * It runs in atomic (preempt-disabled) context, but kasumi_fake_mi_prepare()
-	 * takes a mutex and does filp_open/kernel_read I/O on /proc/self/mountinfo
-	 * (which itself re-enters getname_flags). On CONFIG_PREEMPT kernels that is
-	 * scheduling-while-atomic / self-deadlock -> panic. The cache is filled
-	 * lazily in process context at read() time instead.
-	 */
-	(void)check_mountinfo_prime;
+	if (check_mountinfo_prime && buf[0] == '/' &&
+	    kasumi_path_is_proc_mountinfo(buf) &&
+	    kasumi_should_apply_hide_rules())
+		(void)kasumi_fake_mi_prepare(false);
 
 	if (!have_path_filters)
 		return 0;
@@ -753,18 +717,21 @@ static KASUMI_NOCFI int kasumi_kp_getname_flags_pre(struct kprobe *p, struct pt_
 		return 1;
 	}
 
-	/* Redirect: build a struct filename for the target path (改指针) and skip
-	 * the original getname_flags entirely. Use the GFP_ATOMIC builder, NOT
-	 * getname_kernel() — this handler is preempt-disabled (atomic) and
-	 * getname_kernel's GFP_KERNEL alloc can schedule-while-atomic on PREEMPT. */
+	/* Redirect: use getname_kernel to build a struct filename from the target
+	 * path, then skip the original getname_flags entirely.  This avoids
+	 * writing back to user memory (which may be read-only, too small, or
+	 * cause PAN/MTE faults in atomic context). */
 	if (buf[0] != '/')
 		return 0;
 	target = kasumi_resolve_target(buf);
 	if (!target)
 		return 0;
-	{
-		struct filename *fname = kasumi_getname_atomic(target);
+	if (kasumi_getname_kernel) {
+		struct filename *fname;
 
+		kasumi_this_cpu()->kprobe_reent = 1;
+		fname = kasumi_getname_kernel(target);
+		kasumi_this_cpu()->kprobe_reent = 0;
 		kfree(target);
 		if (IS_ERR(fname))
 			return 0;
@@ -773,6 +740,8 @@ static KASUMI_NOCFI int kasumi_kp_getname_flags_pre(struct kprobe *p, struct pt_
 		KASUMI_POP_STACK(regs);
 		return 1;
 	}
+	kfree(target);
+	return 0;
 }
 
 /* vfs_getattr kprobe pre: nop (stat spoofing is done in kretprobe entry/ret). */
@@ -1318,7 +1287,7 @@ KASUMI_NOCFI int kasumi_kp_iterate_dir_pre(struct kprobe *p, struct pt_regs *reg
 	return 0;
 }
 
-KASUMI_NOCFI struct kasumi_filldir_wrapper *kasumi_iterate_prepare_wrapper(struct file *file,
+struct kasumi_filldir_wrapper *kasumi_iterate_prepare_wrapper(struct file *file,
 							      struct dir_context *orig_ctx)
 {
 	struct kasumi_filldir_wrapper *w;
@@ -1330,6 +1299,8 @@ KASUMI_NOCFI struct kasumi_filldir_wrapper *kasumi_iterate_prepare_wrapper(struc
 	if (kasumi_this_cpu()->in_populate_inject)
 		return NULL;
 	if (!READ_ONCE(kasumi_enabled))
+		return NULL;
+	if (uid_eq(current_uid(), GLOBAL_ROOT_UID))
 		return NULL;
 	if (READ_ONCE(kasumi_daemon_pid) > 0 && task_tgid_vnr(current) == READ_ONCE(kasumi_daemon_pid))
 		return NULL;
@@ -1346,7 +1317,6 @@ KASUMI_NOCFI struct kasumi_filldir_wrapper *kasumi_iterate_prepare_wrapper(struc
 	w->wrap_ctx.actor = kasumi_filldir_filter;
 	w->wrap_ctx.pos = orig_ctx->pos;
 	w->parent_dentry = file && file->f_path.dentry ? file->f_path.dentry : NULL;
-	w->inject_done = orig_ctx->pos != 0;
 
 	if (w->parent_dentry) {
 		dir_inode = d_inode(w->parent_dentry);
@@ -1414,12 +1384,6 @@ KASUMI_NOCFI struct kasumi_filldir_wrapper *kasumi_iterate_prepare_wrapper(struc
 				rcu_read_unlock();
 			}
 		}
-	}
-
-	if (uid_eq(current_uid(), GLOBAL_ROOT_UID) &&
-	    !w->dir_has_hidden && !w->dir_has_inject) {
-		kmem_cache_free(kasumi_filldir_cache, w);
-		return NULL;
 	}
 
 	if (!w->dir_has_hidden && !w->dir_has_inject &&
@@ -1500,17 +1464,7 @@ int kasumi_vfs_hooks_init(bool skip_vfs)
 		kasumi_vfs_use_ftrace = false;
 		kasumi_getxattr_kprobe_registered = 0;
 
-		if (!kasumi_names_cachep) {
-			unsigned long nc = kasumi_lookup_name("names_cachep");
-
-			if (nc && kasumi_valid_kernel_addr(nc))
-				kasumi_names_cachep = *(struct kmem_cache **)nc;
-			if (!kasumi_names_cachep)
-				pr_warn("Kasumi: names_cachep not found, getname path redirect disabled\n");
-		}
-
-		if (kasumi_syscall_dispatcher_nr < 0 ||
-		    !kasumi_has_syscall_hook(__NR_openat)) {
+		if (!kasumi_tracepoint_path_registered()) {
 			unsigned long addr = kasumi_lookup_name(kasumi_vfs_hooks[0].name);
 
 			if (!addr) {
@@ -1529,11 +1483,13 @@ int kasumi_vfs_hooks_init(bool skip_vfs)
 		}
 
 		pr_info("Kasumi: initialized (getattr=iop, readdir=fop, d_path=disabled, getxattr kprobe=disabled, GET_FD via %s)\n",
-			kasumi_syscall_dispatcher_nr >= 0 ? "TSR" : "kprobes");
+			kasumi_tracepoint_path_registered() && kasumi_tracepoint_getfd_registered() ?
+				"sys_enter/sys_exit tracepoint" : "kprobes");
 	} else {
 		pr_alert("Kasumi: skipping VFS hooks (kasumi_skip_vfs=1)\n");
 		pr_info("Kasumi: initialized (VFS hooks skipped, GET_FD via %s)\n",
-			kasumi_syscall_dispatcher_nr >= 0 ? "TSR" : "kprobes");
+			kasumi_tracepoint_path_registered() && kasumi_tracepoint_getfd_registered() ?
+				"sys_enter/sys_exit tracepoint" : "kprobes");
 	}
 #else
 	pr_info("Kasumi: initialized (GET_FD only, VFS kprobes disabled)\n");

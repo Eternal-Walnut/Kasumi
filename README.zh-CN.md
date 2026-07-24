@@ -13,18 +13,18 @@ English version： [README.md](./README.md)
 - 仓库形态：LKM（不是 in-tree 内核补丁）
 - 主代码目录：`src/`
 - 协议定义：`src/include/kasumi_uapi.h`
-- 当前协议版本：`KSM_PROTOCOL_VERSION = 16`
-- Hook 策略：热路径优先使用 syscall-table TSR，必要时配合 fop/iop shadow 与 kprobe/ftrace 回退
+- 当前协议版本：`KSM_PROTOCOL_VERSION = 15`
+- Hook 策略：优先 ftrace/tracepoint，不可用时回退 kprobe/kretprobe
 - 已包含 `arch_ftrace_get_regs` 在 6.6+ 的兼容处理
 
 ## 主要能力
 
-- 路径重定向：`src -> target`，覆盖 `openat`、`statx`、`newfstatat`、`faccessat` 以及 xattr 路径类 syscall
+- 路径重定向：`src -> target`
 - 路径展示反向映射（`d_path` 相关）
 - 目录隐藏（`iterate_dir` 过滤）
 - 目录合并/注入
 - `kstat` 伪装（ino/dev/size/time 等）
-- overlay/xattr 相关过滤，以及注入文件的 SELinux label 展示
+- overlay/xattr 相关过滤
 - `uname` 伪装
 - `/proc/cmdline` 伪装
 - `/proc/<pid>/maps` 规则伪装（ino/dev/pathname）
@@ -34,9 +34,8 @@ English version： [README.md](./README.md)
 
 ## Hook 架构
 
-- GET_FD：通过 `reboot`/`prctl` 走 syscall-table TSR，保留旧 kprobe 回退
-- 路径 syscall：syscall-table TSR 覆盖 `openat/openat2`、`statx`、`newfstatat`、`faccessat`、`getxattr/lgetxattr` 与 `listxattr/llistxattr`
-- VFS：`getattr` 与 `readdir` 使用 iop/fop shadow hook；必要时仍可使用 ftrace/kretprobe 回退路径
+- GET_FD：`tracepoint` 优先，失败回退 `kprobe/kretprobe`
+- VFS：`ftrace(entry) + kretprobe(ret)` 优先，失败回退 `kprobe`
 - 符号解析：优先 `kallsyms_lookup_name`，失败回退逐符号 kprobe 解析
 
 ## CI 覆盖 KMI
@@ -116,7 +115,6 @@ Anatdx 本人维护的 [YukiSU](https://github.com/Anatdx/YukiSU) 提供与 Kern
 - 出现 `Unknown symbol __tracepoint_sys_enter`：尝试 `kasumi_no_tracepoint=1`
 - 可编译但无法加载：检查 `vermagic`、模块签名策略和 `dmesg`
 - 调整 hook/ABI 后：优先用 `KSM_IOC_GET_HOOKS` 与 `KSM_IOC_GET_FEATURES` 做运行态自检
-- 排查合并/注入回归：同时检查 canonical 与 symlink 路径下的 `ls`、`ls -l`、`ls -Z` 和 `getfattr -n security.selinux`
 
 ## 许可证
 

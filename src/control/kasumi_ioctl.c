@@ -51,6 +51,7 @@
 #include "kasumi_path_policy.h"
 #include "kasumi_overlay.h"
 #include "kasumi_syscall_redirect.h"
+#include "kasumi_tracepoint_hooks.h"
 #include "kasumi_uname.h"
 #include "kasumi_dop_override.h"
 #include "kasumi_xattr_sid_override.h"
@@ -63,7 +64,7 @@
  * GET_FD is syscall-only -> kasumi_get_anon_fd()
  * ====================================================================== */
 
-static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
+static int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 {
 	struct kasumi_syscall_arg req;
 	struct kasumi_entry *entry;
@@ -82,7 +83,6 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 		kasumi_current_mirror_path = kasumi_mirror_path_buf;
 		kasumi_current_mirror_name = kasumi_mirror_name_buf;
 		mutex_unlock(&kasumi_config_mutex);
-		kasumi_fake_mi_invalidate_all();
 		rcu_barrier();
 		return 0;
 	}
@@ -578,8 +578,7 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 		if (kasumi_uname_capable())
 			features |= KSM_FEATURE_UNAME_SPOOF;
 		if (kasumi_cmdline_kprobe_registered || kasumi_cmdline_kretprobe_registered ||
-		    (kasumi_syscall_dispatcher_nr >= 0 &&
-		     kasumi_has_syscall_hook(__NR_read)))
+		    (kasumi_tracepoint_path_registered() && kasumi_tracepoint_getfd_registered()))
 			features |= KSM_FEATURE_CMDLINE_SPOOF;
 		features |= KSM_FEATURE_KSTAT_SPOOF;
 		features |= KSM_FEATURE_MERGE_DIR;
@@ -612,8 +611,6 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 		char *kbuf;
 		size_t buf_size, written = 0;
 		int n;
-		bool path_tsr = false;
-		bool xattr_path_tsr = false;
 
 		if (copy_from_user(&list_arg, arg, sizeof(list_arg)))
 			return -EFAULT;
@@ -631,6 +628,9 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 		    (kasumi_has_syscall_hook(__NR_reboot) ||
 		     kasumi_has_syscall_hook(__NR_prctl)))
 			n = scnprintf(kbuf + written, buf_size - written, "GET_FD: TSR\n");
+		else if (kasumi_tracepoint_path_registered() && kasumi_tracepoint_getfd_registered())
+			n = scnprintf(kbuf + written, buf_size - written,
+				     "GET_FD: tracepoint (sys_enter/sys_exit)\n");
 		else if (kasumi_ni_kprobe_registered)
 			n = scnprintf(kbuf + written, buf_size - written,
 				     "GET_FD: kprobe (ni_syscall nr=%d)\n", kasumi_syscall_nr_param);
@@ -644,26 +644,13 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 		/* Path redirect */
 		if (kasumi_syscall_dispatcher_nr >= 0 &&
 		    kasumi_has_syscall_hook(__NR_openat))
-			path_tsr = true;
-#ifdef __NR_getxattr
-		if (kasumi_syscall_dispatcher_nr >= 0 &&
-		    kasumi_has_syscall_hook(__NR_getxattr))
-			xattr_path_tsr = true;
-#endif
-#ifdef __NR_listxattr
-		if (kasumi_syscall_dispatcher_nr >= 0 &&
-		    kasumi_has_syscall_hook(__NR_listxattr))
-			xattr_path_tsr = true;
-#endif
-		if (path_tsr)
 			n = scnprintf(kbuf + written, buf_size - written, "path: TSR\n");
+		else if (kasumi_tracepoint_path_registered())
+			n = scnprintf(kbuf + written, buf_size - written, "path: tracepoint (sys_enter)\n");
 		else if (kasumi_getname_kprobe_registered)
 			n = scnprintf(kbuf + written, buf_size - written, "path: kprobe (getname_flags)\n");
 		else
 			n = scnprintf(kbuf + written, buf_size - written, "path: none\n");
-		written += n;
-		n = scnprintf(kbuf + written, buf_size - written, "xattr path: %s\n",
-			      xattr_path_tsr ? "TSR" : "none");
 		written += n;
 
 		/* VFS hooks */
@@ -678,9 +665,8 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 				     "vfs: getattr=iop readdir=fop d_path=none getxattr=none\n");
 		written += n;
 		n = scnprintf(kbuf + written, buf_size - written,
-			      "selinuxfs/access,context,status,proc_attr_current: access=%s status=%s\n",
-			      kasumi_fake_selinuxfs_access_active() ? "shadow fop" : "none",
-			      kasumi_fake_selinuxfs_status_active() ? "shadow fop" : "none");
+			      "selinuxfs/access,context,proc_attr_current: %s\n",
+			      kasumi_fake_selinuxfs_access_active() ? "shadow fop" : "none");
 		written += n;
 
 		/* uname */
@@ -700,6 +686,8 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 		if (kasumi_syscall_dispatcher_nr >= 0 &&
 		    kasumi_has_syscall_hook(__NR_read))
 			n = scnprintf(kbuf + written, buf_size - written, "cmdline: TSR\n");
+		else if (kasumi_tracepoint_path_registered() && kasumi_tracepoint_getfd_registered())
+			n = scnprintf(kbuf + written, buf_size - written, "cmdline: tracepoint (sys_enter/sys_exit)\n");
 		else if (kasumi_cmdline_kretprobe_registered)
 			n = scnprintf(kbuf + written, buf_size - written, "cmdline: kretprobe (read)\n");
 		else if (kasumi_cmdline_kprobe_registered)
@@ -742,9 +730,6 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 		if (kasumi_proc_proxy_registered)
 			n = scnprintf(kbuf + written, buf_size - written,
 				     "maps: proxy (open fd read filter)\n");
-		else if (kasumi_maps_seq_read_registered)
-			n = scnprintf(kbuf + written, buf_size - written,
-				     "maps: kretprobe (seq_read fallback)\n");
 		else if (kasumi_mount_hide_vfs_read_registered)
 			n = scnprintf(kbuf + written, buf_size - written,
 				     "maps: kretprobe (vfs_read buffer filter)\n");
@@ -758,6 +743,9 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 		else if (kasumi_mount_hide_pread_fallback_registered)
 			n = scnprintf(kbuf + written, buf_size - written,
 				     "maps: kretprobe (pread64 buffer filter)\n");
+		else if (kasumi_maps_seq_read_registered)
+			n = scnprintf(kbuf + written, buf_size - written,
+				     "maps: kretprobe (seq_read fallback)\n");
 		else
 			n = scnprintf(kbuf + written, buf_size - written, "maps: none\n");
 		written += n;
@@ -1020,19 +1008,16 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 		mutex_unlock(&kasumi_config_mutex);
 
 		if (parent_dir) {
-			kasumi_mark_dir_has_inject(parent_dir);
 			kasumi_add_inject_rule(parent_dir);
+			kasumi_mark_dir_has_inject(parent_dir);
 		}
 		if (target && kasumi_kern_path &&
 		    kasumi_kern_path(target, LOOKUP_FOLLOW, &path) == 0) {
 			if (path.dentry && d_inode(path.dentry)) {
 				target_inode = d_inode(path.dentry);
 				kasumi_ihold(target_inode);
-				if (src_inode)
-					(void)kasumi_clone_source_inode_attrs(target_inode,
-									       src_inode);
 				(void)kasumi_dop_install(path.dentry, src);
-				(void)kasumi_xattr_sid_install_path_ancestors(target, src);
+				(void)kasumi_xattr_sid_install(target_inode, src);
 			}
 			kasumi_path_put(&path);
 		}
@@ -1057,7 +1042,6 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 
 	case KSM_IOC_HIDE_RULE: {
 		char *resolved_src = NULL;
-		char *parent_dir = NULL;
 		struct path path;
 		struct inode *target_inode = NULL;
 		struct inode *parent_inode = NULL;
@@ -1087,23 +1071,6 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 		if (resolved_src) {
 			kfree(src);
 			src = resolved_src;
-		}
-		{
-			char *ls = strrchr(src, '/');
-
-			if (ls) {
-				if (ls == src)
-					parent_dir = kstrdup("/", GFP_KERNEL);
-				else {
-					size_t l = ls - src;
-
-					parent_dir = kmalloc(l + 1, GFP_KERNEL);
-					if (parent_dir) {
-						memcpy(parent_dir, src, l);
-						parent_dir[l] = '\0';
-					}
-				}
-			}
 		}
 
 		if (target_inode) {
@@ -1150,10 +1117,6 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 		}
 		kasumi_enabled = true;
 		mutex_unlock(&kasumi_config_mutex);
-		if (parent_dir) {
-			kasumi_mark_dir_has_inject(parent_dir);
-			kasumi_add_inject_rule(parent_dir);
-		}
 		break;
 	}
 
@@ -1238,7 +1201,7 @@ static KASUMI_NOCFI int kasumi_dispatch_cmd(unsigned int cmd, void __user *arg)
 				kasumi_clear_inode_flags_for_path(entry->target,
 								AS_FLAGS_KASUMI_SPOOF_KSTAT);
 				(void)kasumi_dop_uninstall_path(entry->target);
-				(void)kasumi_xattr_sid_uninstall_path_ancestors(entry->target);
+				(void)kasumi_xattr_sid_uninstall_path(entry->target);
 				hlist_del_rcu(&entry->node);
 				hlist_del_rcu(&entry->target_node);
 				atomic_dec(&kasumi_rule_count);

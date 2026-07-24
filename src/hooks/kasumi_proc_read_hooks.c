@@ -42,7 +42,7 @@
 #include "kasumi_entrypoints.h"
 #include "kasumi_path_policy.h"
 #include "kasumi_proc_hooks.h"
-#include "kasumi_syscall_redirect.h"
+#include "kasumi_tracepoint_hooks.h"
 #include "kasumi_fake_mountinfo.h"
 
 #ifndef D_REAL_DATA
@@ -119,7 +119,7 @@ static char *kasumi_read_filter_buf;
 static DEFINE_MUTEX(kasumi_read_filter_mutex);
 
 static size_t kasumi_filter_overlay_lines(char *kbuf, size_t len);
-static size_t kasumi_filter_maps_lines(char *kbuf, size_t len, bool *changed);
+static size_t kasumi_filter_maps_lines(char *kbuf, size_t len);
 
 struct kasumi_read_mount_ri_data {
 	int fd;
@@ -233,7 +233,6 @@ static ssize_t kasumi_mount_proxy_read(struct file *file, char __user *buf,
 	ssize_t ret;
 	loff_t pos;
 	size_t new_len;
-	bool maps_changed;
 	int srcu_idx;
 
 	srcu_idx = srcu_read_lock(&kasumi_proxy_srcu);
@@ -294,13 +293,11 @@ static ssize_t kasumi_mount_proxy_read(struct file *file, char __user *buf,
 			mutex_unlock(&kasumi_read_filter_mutex);
 			goto out;
 		}
-		new_len = kasumi_filter_maps_lines(kasumi_read_filter_buf, (size_t)ret,
-						   &maps_changed);
-		if (maps_changed &&
+		new_len = kasumi_filter_maps_lines(kasumi_read_filter_buf, (size_t)ret);
+		if (new_len != (size_t)ret &&
 		    copy_to_user(buf, kasumi_read_filter_buf, new_len) == 0)
 			ret = (ssize_t)new_len;
 		mutex_unlock(&kasumi_read_filter_mutex);
-		goto out;
 	}
 
 out:
@@ -350,7 +347,7 @@ out:
 	return ret;
 }
 
-static KASUMI_NOCFI int kasumi_mount_proxy_release(struct inode *inode, struct file *file)
+static int kasumi_mount_proxy_release(struct inode *inode, struct file *file)
 {
 	struct kasumi_mount_file_proxy *proxy =
 		container_of(file->f_op, struct kasumi_mount_file_proxy, proxy_fops);
@@ -378,13 +375,13 @@ static KASUMI_NOCFI int kasumi_mount_proxy_release(struct inode *inode, struct f
 	if (we_own) {
 		/* defer free past current SRCU grace period */
 		kasumi_call_srcu_ptr(&kasumi_proxy_srcu, &proxy->rcu,
-				     kasumi_mount_proxy_rcu_free);
+			  kasumi_mount_proxy_rcu_free);
 	}
 	/* drained side: kasumi_mount_proxy_drain() owns the kfree */
 	return ret;
 }
 
-KASUMI_NOCFI int kasumi_mount_proxy_install_fd(int fd)
+int kasumi_mount_proxy_install_fd(int fd)
 {
 	struct file *file;
 	struct kasumi_mount_file_proxy *proxy;
@@ -478,7 +475,7 @@ out:
 	return ret;
 }
 
-KASUMI_NOCFI void kasumi_mount_proxy_drain(void)
+void kasumi_mount_proxy_drain(void)
 {
 	struct kasumi_mount_file_proxy *p, *tmp;
 	LIST_HEAD(victims);
@@ -697,10 +694,9 @@ static int kasumi_parse_maps_line(const char *line, size_t line_len,
 }
 
 /* Filter /proc/pid/maps buffer: replace lines matching a rule with spoofed ino/dev/pathname.
- * In-place and fixed length. seq_read has already advanced by the original byte count, so
- * shortening the returned buffer would make user space skip later mappings such as [stack].
- */
-static size_t kasumi_filter_maps_lines(char *kbuf, size_t len, bool *changed)
+ * In-place; spoofed line must not exceed original line length (pathname truncated if needed).
+ * Returns new length. */
+static size_t kasumi_filter_maps_lines(char *kbuf, size_t len)
 {
 	size_t in = 0, out = 0;
 	struct kasumi_maps_rule_entry *r;
@@ -712,9 +708,6 @@ static size_t kasumi_filter_maps_lines(char *kbuf, size_t len, bool *changed)
 	const char *spoof_name;
 	size_t path_len, max_path;
 	int n;
-
-	if (changed)
-		*changed = false;
 
 	while (in < len) {
 		size_t line_start;
@@ -776,33 +769,29 @@ static size_t kasumi_filter_maps_lines(char *kbuf, size_t len, bool *changed)
 		}
 		mutex_unlock(&kasumi_maps_mutex);
 		if (spoof_ino != ino || spoof_dev != dev || spoof_name != pathname) {
-			size_t body_len = line_len > 0 ? line_len - 1 : 0;
-
-			/* Format a replacement line that preserves the original line length. */
-			max_path = body_len;
+			/* Format new line; must not exceed line_len. */
+			max_path = line_len;
+			if (max_path > 1)
+				max_path -= 1; /* \n */
 			/* Reserve "%08lx-%08lx %s %08lx %02x:%02x %lu " = 8+1+8+1+4+1+8+1+5+1+max(ino)=20 ~56 */
 			if (max_path > 56)
 				max_path -= 56;
 			else
 				max_path = 0;
-			n = scnprintf(kbuf + out, min(line_len, len - out),
-				      "%08lx-%08lx %s %08lx %02x:%02x %lu ",
+			n = scnprintf(kbuf + out, len - out, "%08lx-%08lx %s %08lx %02x:%02x %lu ",
 				      start, end, flags, pgoff,
 				      (unsigned int)MAJOR(spoof_dev), (unsigned int)MINOR(spoof_dev),
 				      spoof_ino);
 			path_len = strnlen(spoof_name, max_path);
-			if (body_len > n && n + path_len > body_len)
-				path_len = body_len - n;
-			if (path_len > 0 && body_len > n)
+			if ((size_t)line_len > n + 1 && n + path_len + 1 > line_len)
+				path_len = (size_t)line_len - n - 1;
+			if (path_len > 0)
 				memcpy(kbuf + out + n, spoof_name, path_len);
 			n += path_len;
-			if (body_len > n)
-				memset(kbuf + out + n, ' ', body_len - n);
-			if (complete_line)
-				kbuf[out + body_len] = '\n';
-			out += line_len;
-			if (changed)
-				*changed = true;
+			if (n < len - out)
+				kbuf[out + n] = '\n';
+			n++;
+			out += n;
 		} else {
 			if (out != line_start)
 				memmove(kbuf + out, kbuf + line_start, line_len);
@@ -813,7 +802,7 @@ static size_t kasumi_filter_maps_lines(char *kbuf, size_t len, bool *changed)
 	return out;
 }
 
-static KASUMI_NOCFI int kasumi_read_mount_filter_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int kasumi_read_mount_filter_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	long ret;
 	struct kasumi_read_mount_ri_data *d = (struct kasumi_read_mount_ri_data *)ri->data;
@@ -821,7 +810,6 @@ static KASUMI_NOCFI int kasumi_read_mount_filter_ret(struct kretprobe_instance *
 	char *path_buf;
 	char *path;
 	size_t new_len;
-	bool maps_changed;
 	bool is_mountinfo;
 	bool should_hide = false;
 	bool fake_served = false;
@@ -939,9 +927,8 @@ static KASUMI_NOCFI int kasumi_read_mount_filter_ret(struct kretprobe_instance *
 	    strncmp(path, "/proc/", 6) == 0 &&
 	    (strstr(path, "/maps") || strstr(path, "/smaps"))) {
 		free_page((unsigned long)path_buf);
-		new_len = kasumi_filter_maps_lines(kasumi_read_filter_buf, (size_t)ret,
-						   &maps_changed);
-		if (maps_changed) {
+		new_len = kasumi_filter_maps_lines(kasumi_read_filter_buf, (size_t)ret);
+		if (new_len != (size_t)ret) {
 			if (copy_to_user(d->buf, kasumi_read_filter_buf, new_len) == 0) {
 #if defined(__aarch64__)
 				regs->regs[0] = (unsigned long)new_len;
@@ -959,7 +946,7 @@ static KASUMI_NOCFI int kasumi_read_mount_filter_ret(struct kretprobe_instance *
 	return 0;
 }
 
-static KASUMI_NOCFI int kasumi_vfs_read_mount_filter_ret(struct kretprobe_instance *ri,
+static int kasumi_vfs_read_mount_filter_ret(struct kretprobe_instance *ri,
 					     struct pt_regs *regs)
 {
 	long ret;
@@ -968,7 +955,6 @@ static KASUMI_NOCFI int kasumi_vfs_read_mount_filter_ret(struct kretprobe_instan
 	char *path_buf;
 	char *path;
 	size_t new_len;
-	bool maps_changed;
 	bool is_mountinfo;
 	bool should_hide = false;
 	bool fake_served = false;
@@ -1070,9 +1056,8 @@ static KASUMI_NOCFI int kasumi_vfs_read_mount_filter_ret(struct kretprobe_instan
 	    strncmp(path, "/proc/", 6) == 0 &&
 	    (strstr(path, "/maps") || strstr(path, "/smaps"))) {
 		free_page((unsigned long)path_buf);
-		new_len = kasumi_filter_maps_lines(kasumi_read_filter_buf, (size_t)ret,
-						   &maps_changed);
-		if (maps_changed) {
+		new_len = kasumi_filter_maps_lines(kasumi_read_filter_buf, (size_t)ret);
+		if (new_len != (size_t)ret) {
 			if (copy_to_user(d->buf, kasumi_read_filter_buf, new_len) == 0) {
 #if defined(__aarch64__)
 				regs->regs[0] = (unsigned long)new_len;
@@ -1141,14 +1126,13 @@ static int kasumi_seq_read_maps_filter_entry(struct kretprobe_instance *ri, stru
 	return 0;
 }
 
-static KASUMI_NOCFI int kasumi_seq_read_maps_filter_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int kasumi_seq_read_maps_filter_ret(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	long ret;
 	struct kasumi_seq_read_ri_data *d = (struct kasumi_seq_read_ri_data *)ri->data;
 	char *path_buf;
 	char *path;
 	size_t new_len;
-	bool maps_changed;
 
 	if (!(kasumi_feature_enabled_mask & KSM_FEATURE_MAPS_SPOOF) ||
 	    !kasumi_should_apply_hide_rules())
@@ -1183,9 +1167,8 @@ static KASUMI_NOCFI int kasumi_seq_read_maps_filter_ret(struct kretprobe_instanc
 		mutex_unlock(&kasumi_maps_spoof_mutex);
 		return 0;
 	}
-	new_len = kasumi_filter_maps_lines(kasumi_maps_spoof_buf, (size_t)ret,
-					   &maps_changed);
-	if (maps_changed) {
+	new_len = kasumi_filter_maps_lines(kasumi_maps_spoof_buf, (size_t)ret);
+	if (new_len != (size_t)ret) {
 		if (copy_to_user(d->buf, kasumi_maps_spoof_buf, new_len) == 0) {
 #if defined(__aarch64__)
 			regs->regs[0] = (unsigned long)new_len;
@@ -1210,7 +1193,7 @@ static struct kretprobe kasumi_krp_seq_read_maps = {
  * OVERLAYFS_SUPER_MAGIC from uapi/linux/magic.h so we use the running kernel's definition.
  *
  * Two routes share the same resolver:
- *   - TSR
+ *   - sys_enter/sys_exit tracepoint dispatcher (preferred when registered)
  *   - kretprobe on __arm64_sys_statfs (legacy fallback)
  */
 
@@ -1263,7 +1246,7 @@ void kasumi_statfs_apply_spoof(void __user *buf, unsigned long spoof_f_type)
 	}
 }
 
-KASUMI_NOCFI void kasumi_handle_sys_enter_statfs(struct pt_regs *regs, long id)
+void kasumi_handle_sys_enter_statfs(struct pt_regs *regs, long id)
 {
 #if defined(__aarch64__) || defined(__x86_64__)
 	struct kasumi_percpu *pcpu = kasumi_this_cpu();
@@ -1421,8 +1404,7 @@ void kasumi_proc_read_hooks_init(void)
 	unsigned long pread_addr = 0;
 	const char *read_sym_name = NULL;
 	const char *pread_sym_name = NULL;
-	bool use_proxy_filter = kasumi_syscall_dispatcher_nr >= 0 &&
-				kasumi_has_syscall_hook(__NR_openat);
+	bool use_proxy_filter = kasumi_tracepoint_path_registered();
 	bool use_syscall_filter = false;
 	int i;
 
@@ -1510,34 +1492,30 @@ void kasumi_proc_read_hooks_init(void)
 		} else {
 			pr_warn("Kasumi: show_mountinfo not found\n");
 		}
-	}
+		{
+			unsigned long seq_read_addr = kasumi_lookup_name("seq_read");
 
-	if (!use_proxy_filter && !use_syscall_filter && !kasumi_maps_seq_read_registered) {
-		unsigned long seq_read_addr = kasumi_lookup_name("seq_read");
-
-		if (seq_read_addr) {
-			kasumi_maps_spoof_buf = vmalloc(KASUMI_READ_MOUNT_FILTER_BUF);
-			if (kasumi_maps_spoof_buf) {
-				kasumi_krp_seq_read_maps.kp.addr = (kprobe_opcode_t *)seq_read_addr;
-				if (register_kretprobe(&kasumi_krp_seq_read_maps) == 0) {
-					kasumi_maps_seq_read_registered = 1;
-					pr_info("Kasumi: maps spoof via kretprobe on seq_read (fallback)\n");
-				} else {
-					vfree(kasumi_maps_spoof_buf);
-					kasumi_maps_spoof_buf = NULL;
+			if (seq_read_addr) {
+				kasumi_maps_spoof_buf = vmalloc(KASUMI_READ_MOUNT_FILTER_BUF);
+				if (kasumi_maps_spoof_buf) {
+					kasumi_krp_seq_read_maps.kp.addr = (kprobe_opcode_t *)seq_read_addr;
+					if (register_kretprobe(&kasumi_krp_seq_read_maps) == 0) {
+						kasumi_maps_seq_read_registered = 1;
+						pr_info("Kasumi: maps spoof via kretprobe on seq_read (fallback)\n");
+					} else {
+						vfree(kasumi_maps_spoof_buf);
+						kasumi_maps_spoof_buf = NULL;
+					}
 				}
+			} else {
+				pr_warn("Kasumi: seq_read not found, maps spoof disabled when read path unavailable\n");
 			}
-		} else {
-			pr_warn("Kasumi: seq_read not found, maps spoof disabled\n");
 		}
 	}
 
-	if (!use_proxy_filter && !kasumi_statfs_kretprobe_registered) {
-		/* LEGACY fallback only (TSR off). kretprobe handlers run in
-		 * ATOMIC context (preempt disabled), so the kern_path() in the
-		 * statfs handler is a sleep-in-atomic bug on PREEMPT kernels.
-		 * When TSR is active, statfs is handled in the sleepable
-		 * syscall dispatcher instead. */
+	if (!kasumi_statfs_kretprobe_registered) {
+		/* Always kretprobe, never tracepoint: kern_path() may
+		 * sleep but tracepoint runs in atomic context. */
 		{
 			static const char *statfs_syms[] = {
 #if defined(__aarch64__)

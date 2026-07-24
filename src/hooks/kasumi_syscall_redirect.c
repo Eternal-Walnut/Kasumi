@@ -81,6 +81,7 @@ void *kasumi_syscall_table;
 int  kasumi_syscall_dispatcher_nr = -1;
 static kasumi_syscall_hook_fn hooks[__NR_syscalls];
 static kasumi_syscall_hook_fn saved_ni;
+static bool kasumi_redirect_active;
 DEFINE_STATIC_SRCU(kasumi_redirect_srcu);
 kasumi_syscall_hook_fn orig_kernel_openat, orig_kernel_openat2, orig_kernel_statx;
 kasumi_syscall_hook_fn orig_kernel_statfs, orig_kernel_fstatfs;
@@ -580,6 +581,7 @@ int kasumi_syscall_redirect_init(void)
 		kasumi_syscall_dispatcher_nr = -1;
 		return ret;
 	}
+	WRITE_ONCE(kasumi_redirect_active, true);
 
 {
 	int n = 0;
@@ -634,6 +636,9 @@ void kasumi_syscall_redirect_exit(void)
 	static struct kasumi_drain_state drain;
 	int i;
 	bool drained;
+
+	if (!READ_ONCE(kasumi_redirect_active))
+		return;
 
 	/*
 	 * Caller (kasumi_bootstrap_exit) has already unregistered the
@@ -702,6 +707,7 @@ void kasumi_syscall_redirect_exit(void)
 
 	for (i = 0; i < __NR_syscalls; i++)
 		WRITE_ONCE(hooks[i], NULL);
+	WRITE_ONCE(kasumi_redirect_active, false);
 
 	kasumi_syscall_dispatcher_nr = -1;
 	orig_kernel_openat  = NULL;

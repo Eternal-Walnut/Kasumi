@@ -188,6 +188,10 @@ static int kasumi_resolve_runtime_symbols(void)
 int kasumi_bootstrap_init(void)
 {
 	int ret;
+	bool fake_mi_initialized = false;
+	bool redirect_initialized = false;
+	bool proc_hooks_started = false;
+	bool vfs_hooks_started = false;
 
 	pr_alert("Kasumi: === INIT START v%s ===\n", KASUMI_VERSION);
 	if (kasumi_dummy_mode_param) {
@@ -237,29 +241,48 @@ int kasumi_bootstrap_init(void)
 
 	kasumi_resolve_system_dev();
 
-	(void)kasumi_syscall_redirect_init();
+	/* Initialize the cache lock and symbol state before publishing the
+	 * syscall dispatcher/tracepoint entry points.  h_statx and h_openat can
+	 * otherwise race module initialization and touch an uninitialized mutex. */
+	(void)kasumi_fake_mi_init();
+	fake_mi_initialized = true;
 
+	ret = kasumi_syscall_redirect_init();
+	redirect_initialized = ret == 0;
+
+	proc_hooks_started = true;
 	ret = kasumi_proc_hooks_init(kasumi_skip_getfd_param, kasumi_no_tracepoint_param,
 				     kasumi_skip_extra_kprobes_param);
 	if (ret)
-		goto err_buffers;
+		goto err_entrypoints;
 
+	vfs_hooks_started = true;
 	ret = kasumi_vfs_hooks_init(kasumi_skip_vfs_param);
 	if (ret)
-		goto err_proc;
+		goto err_entrypoints;
 
 	(void)kasumi_sop_override_init();
 	(void)kasumi_dop_override_init();
 	(void)kasumi_xattr_sid_override_init();
 	(void)kasumi_iop_override_init();
 	(void)kasumi_fop_override_init();
-	(void)kasumi_fake_mi_init();
 	pr_alert("Kasumi: Chikyuu ga buttobu kurai tanoshinjaoo!!\n");
 	return 0;
 
-err_proc:
-	kasumi_proc_hooks_exit();
+err_entrypoints:
+	/* Match the normal teardown order.  In particular, never leave the
+	 * patched dispatcher pointing into module text when init returns an
+	 * error and the loader frees the module. */
+	kasumi_tracepoint_path_exit();
+	if (redirect_initialized)
+		kasumi_syscall_redirect_exit();
+	if (proc_hooks_started)
+		kasumi_proc_hooks_exit();
+	if (vfs_hooks_started)
+		kasumi_vfs_hooks_exit(kasumi_skip_vfs_param);
 err_buffers:
+	if (fake_mi_initialized)
+		kasumi_fake_mi_exit();
 	vfree(kasumi_percpu_base);
 	vfree(kasumi_getname_buf_base);
 	vfree(kasumi_iterate_buf_base);

@@ -206,8 +206,6 @@ static struct kretprobe kasumi_krp_reboot = {
  */
 static int kasumi_prctl_pre(struct kprobe *p, struct pt_regs *regs)
 {
-	if (in_atomic() || irqs_disabled())
-		return 0;
 #if defined(__aarch64__)
 	struct pt_regs *real_regs;
 	unsigned long option;
@@ -215,6 +213,8 @@ static int kasumi_prctl_pre(struct kprobe *p, struct pt_regs *regs)
 	int __user *fd_ptr;
 	int fd;
 
+	if (in_atomic() || irqs_disabled())
+		return 0;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 16, 0)
 	real_regs = (struct pt_regs *)regs->regs[0];
 #else
@@ -239,6 +239,8 @@ static int kasumi_prctl_pre(struct kprobe *p, struct pt_regs *regs)
 	unsigned long option = regs->di;
 	unsigned long arg2 = regs->si;
 
+	if (in_atomic() || irqs_disabled())
+		return 0;
 	if (option != (unsigned long)KSM_PRCTL_GET_FD)
 		return 0;
 	if (!uid_eq(current_uid(), GLOBAL_ROOT_UID))

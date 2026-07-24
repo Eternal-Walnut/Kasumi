@@ -652,8 +652,8 @@ ssize_t kasumi_fake_mi_serve(struct file *file, void __user *userbuf,
 
     if (!file || !userbuf)
         return 0;
-	if (!READ_ONCE(g_cache_initialized))
-		return -ENODEV;
+    if (!READ_ONCE(g_cache_initialized))
+        return -ENODEV;
 
     /* kretprobe/tracepoint callers cannot block or fault user pages. */
     if (in_atomic() || irqs_disabled())

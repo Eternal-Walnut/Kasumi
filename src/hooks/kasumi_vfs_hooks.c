@@ -261,6 +261,10 @@ char __user *kasumi_userspace_stack_buffer(const char *data, size_t len)
 {
 	char __user *p;
 
+	/* Faulting a user page may sleep.  Tracepoint/kprobe callers must use a
+	 * process-context syscall wrapper instead. */
+	if (in_atomic() || irqs_disabled())
+		return NULL;
 	if (!current->mm)
 		return NULL;
 	p = (void __user *)current_user_stack_pointer() - len;
@@ -308,6 +312,9 @@ void kasumi_handle_sys_enter_getfd(struct pt_regs *regs, long id)
 #else
 	return;
 #endif
+	/* anon_inode_getfd() allocates with GFP_KERNEL and installs an fd. */
+	if (in_atomic() || irqs_disabled())
+		return;
 	if (!uid_eq(current_uid(), GLOBAL_ROOT_UID))
 		return;
 
@@ -365,6 +372,8 @@ bool kasumi_fd_is_proc_cmdline(int fd)
 	struct dentry *dentry, *parent;
 	bool is_cmdline = false;
 
+	if (in_atomic() || irqs_disabled())
+		return false;
 	file = fget(fd);
 	if (!file)
 		return false;
@@ -398,6 +407,10 @@ void kasumi_handle_sys_enter_cmdline(struct pt_regs *regs, long id)
 	 */
 	if (kasumi_has_syscall_hook(__NR_read))
 		return;
+	/* The legacy tracepoint pair cannot safely fget/fput or fault user
+	 * memory, and per-CPU state cannot pair a syscall across migration. */
+	if (in_atomic() || irqs_disabled())
+		return;
 	if (READ_ONCE(kasumi_daemon_pid) > 0 && task_tgid_vnr(current) == READ_ONCE(kasumi_daemon_pid))
 		return;
 
@@ -426,6 +439,10 @@ void kasumi_handle_sys_exit_cmdline(struct pt_regs *regs, long ret)
 	struct kasumi_percpu *pcpu = kasumi_this_cpu();
 	size_t spoof_len, write_len;
 
+	if (in_atomic() || irqs_disabled()) {
+		pcpu->cmdline_ctx.active = 0;
+		return;
+	}
 	if (!pcpu->cmdline_ctx.active || ret <= 0)
 		goto out;
 	pcpu->cmdline_ctx.active = 0;
@@ -504,6 +521,8 @@ void kasumi_handle_sys_exit_path(struct pt_regs *regs, long ret)
 	pcpu->mount_proxy_pending = 0;
 	if (ret < 0)
 		return;
+	if (in_atomic() || irqs_disabled())
+		return;
 
 	(void)kasumi_mount_proxy_install_fd((int)ret);
 }
@@ -518,6 +537,11 @@ void kasumi_handle_sys_enter_path(struct pt_regs *regs, long id)
 	bool have_path_filters;
 
 	if (!kasumi_tp_check_path_syscall(id))
+		return;
+	/* Path resolution, cache preparation, allocation and user-stack writes
+	 * are process-context operations.  Supported syscalls are handled by the
+	 * TSR wrappers; atomic fallback hooks must fail open. */
+	if (in_atomic() || irqs_disabled())
 		return;
 	if (atomic_long_read(&kasumi_ioctl_tgid) == (long)task_tgid_vnr(current))
 		return;

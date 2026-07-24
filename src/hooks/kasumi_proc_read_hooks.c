@@ -391,6 +391,9 @@ int kasumi_mount_proxy_install_fd(int fd)
 	enum kasumi_proc_proxy_kind kind;
 	int ret = 0;
 
+	/* Allocates pages/proxy state and can refresh fake mountinfo. */
+	if (in_atomic() || irqs_disabled())
+		return -EWOULDBLOCK;
 	if (atomic_read(&kasumi_proxy_shutdown))
 		return -ESHUTDOWN;
 

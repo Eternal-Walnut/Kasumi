@@ -305,6 +305,10 @@ void kasumi_uname_apply_scoped_current(void)
 	const struct cred *old_cred;
 	int ret;
 
+	/* Namespace creation, rwsems and credential changes may sleep.  Never
+	 * execute scoped setup from a tracepoint or kprobe callback. */
+	if (in_atomic() || irqs_disabled())
+		return;
 	if (!READ_ONCE(kasumi_uname_scoped_on))
 		return;
 	if (!kasumi_switch_task_namespaces_fn)

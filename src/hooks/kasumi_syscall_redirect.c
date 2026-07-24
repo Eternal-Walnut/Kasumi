@@ -37,7 +37,6 @@
 #include "kasumi_fake_mountinfo.h"
 #include "kasumi_root_detection.h"
 #include "kasumi_syscall_redirect.h"
-#include "kasumi_fake_selinuxfs_access.h"
 
 /* ---- Runtime-resolved kernel patching functions ------------------------ */
 
@@ -362,46 +361,6 @@ static bool kasumi_fd_is_proc_attr_current(int fd)
 	fput(file);
 	return is_attr_current;
 }
-
-static long h_write(const struct pt_regs *regs)
-{
-	int fd;
-	const char __user *buf;
-	size_t count;
-	char context[KASUMI_SELINUX_CTX_MAX];
-	size_t len;
-
-	if (!(kasumi_feature_enabled_mask & KSM_FEATURE_SELINUX_FIX) ||
-	    !kasumi_current_is_selinux_guard_target())
-		return orig_kernel_write(regs);
-
-#if defined(__aarch64__)
-	fd = (int)regs->regs[0];
-	buf = (const char __user *)(uintptr_t)regs->regs[1];
-	count = (size_t)regs->regs[2];
-#else
-	fd = (int)regs->di;
-	buf = (const char __user *)(uintptr_t)regs->si;
-	count = (size_t)regs->dx;
-#endif
-	if (!buf || count == 0 || count >= sizeof(context))
-		return orig_kernel_write(regs);
-	if (!kasumi_fd_is_proc_attr_current(fd))
-		return orig_kernel_write(regs);
-
-	len = count;
-	if (copy_from_user(context, buf, len))
-		return orig_kernel_write(regs);
-	context[len] = '\0';
-
-	if (kasumi_fake_selinuxfs_context_is_sensitive(context)) {
-		kasumi_log("fake_selinuxfs: rejected attr/current write pid=%d uid=%u comm=%s\n",
-			   task_tgid_vnr(current), __kuid_val(current_uid()), current->comm);
-		return -EINVAL;
-	}
-
-	return orig_kernel_write(regs);
-}
 #endif /* __aarch64__ || __x86_64__ */
 
 /* ---- path redirect + mount proxy (TSR) --------------------------------- */
@@ -597,7 +556,6 @@ int kasumi_syscall_redirect_init(void)
 	kasumi_register_syscall_hook(__NR_prctl,   h_prctl);   n++;
 #if defined(__aarch64__) || defined(__x86_64__)
 	kasumi_register_syscall_hook(__NR_read,    h_read);    n++;
-	kasumi_register_syscall_hook(__NR_write,   h_write);   n++;
 #endif
 	pr_info("Kasumi: redirect active @ slot %d, %d hooks\n",
 		kasumi_syscall_dispatcher_nr, n);

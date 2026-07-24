@@ -135,8 +135,6 @@ struct kasumi_spoof_cmdline {
 #define KSM_FEATURE_MAPS_SPOOF    (1 << 7)  /* spoof ino/dev/pathname in /proc/pid/maps (read buffer filter) */
 #define KSM_FEATURE_STATFS_SPOOF  (1 << 8)  /* spoof statfs f_type so direct matches resolved (INCONSISTENT_MOUNT) */
 #define KSM_FEATURE_FAKE_MOUNTINFO (1 << 9) /* serve per-marked-app fake mountinfo (no KSU mounts, renumbered ids) */
-#define KSM_FEATURE_SELINUX_FIX (1 << 10) /* hide app-zygote SELinux policy oracles from marked apps */
-#define KSM_FEATURE_FAKE_SELINUXFS KSM_FEATURE_SELINUX_FIX /* compatibility alias */
 
 /*
  * Maps spoof rule: when a /proc/pid/maps line has (target_ino[, target_dev]),
@@ -212,6 +210,5 @@ struct kasumi_statfs_spoof_arg {
  * restore originals.
  */
 #define KSM_IOC_SET_UNAME_GLOBAL  _IOW(KSM_IOC_MAGIC, 28, struct kasumi_spoof_uname)
-#define KSM_IOC_SELINUX_FIX       _IOW(KSM_IOC_MAGIC, 29, int)
 
 #endif /* _KASUMI_UAPI_H */

@@ -27,7 +27,6 @@ kasumi_lkm-objs := \
 	features/kasumi_iop_override.o \
 	features/kasumi_fop_override.o \
 	features/kasumi_fake_mountinfo.o \
-	features/kasumi_fake_selinuxfs_access.o
 
 ccflags-y += -gz=none
 ccflags-y += -I$(src)/include
